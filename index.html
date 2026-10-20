@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Autumn Firefly Grove &mdash; Tensor-Guided RGB Tracking</title>
+    <title>Autumn Firefly Grove (focus)</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
         html,
@@ -152,16 +152,15 @@
             opacity: 0;
             transition: opacity 1s;
             pointer-events: none;
-            white-space: nowrap
+            max-width: 92vw;
+            text-align: center;
+            line-height: 1.6
         }
 
         #hint.show {
             opacity: 1
         }
     </style>
-    <!-- Load TensorFlow.js and BodyPix for isolated single-subject noise-resistant tracking -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
 </head>
 
 <body>
@@ -171,16 +170,19 @@
     <div id="intro">
         <div class="card">
             <h1>Autumn Firefly Grove</h1>
-            <p>TensorFlow BodyPix Isolation &mdash; tracks only a single subject under overhead view, ignoring background noise and lighting changes.</p>
+            <p>Walk or wave &mdash; fireflies wake up and drift where you move, and the pumpkins glow as you pass.</p>
             <div class="btns">
-                <button id="bCam">Start Camera Stream</button>
-                <button id="bMouse" class="ghost">Use Mouse / Touch</button>
+                <button id="bCam">Start camera</button>
+                <button id="bMouse" class="ghost">Use mouse / touch</button>
             </div>
-            <p class="small">Press F for fullscreen &middot; D for tracking overlay view.</p>
+            <p class="small">Use Chrome or Edge and allow camera access. Press F for fullscreen.</p>
         </div>
     </div>
     <div id="toast"></div>
-    <div id="hint">F fullscreen &nbsp;&middot;&nbsp; M mirror &nbsp;&middot;&nbsp; C switch camera &nbsp;&middot;&nbsp; D debug view &nbsp;&middot;&nbsp; A demo</div>
+    <div id="hint">F fullscreen &nbsp;·&nbsp; M mirror &nbsp;·&nbsp; C switch camera &nbsp;·&nbsp; I list cameras
+        &nbsp;·&nbsp; D motion view &nbsp;·&nbsp; &minus; / + sensitivity &nbsp;·&nbsp; A demo &nbsp;·&nbsp; H hide<br>
+        <b>Focus:</b> P mode (all / zone / one person) &nbsp;·&nbsp; Z draw zone &nbsp;·&nbsp; X clear zone &nbsp;·&nbsp; L re-lock
+        &nbsp;·&nbsp; [ / ] min size</div>
 
     <script>
         (() => {
@@ -195,30 +197,107 @@
 
             let W = 0, H = 0, sc = 1, dpr = 1;
 
-            /* Soft glow sprites */
+            /* ------------------------------------------------------------------ */
+            /*  Soft glow sprites                                                  */
+            /* ------------------------------------------------------------------ */
             function makeGlow(h, s, l) {
                 const c = document.createElement('canvas');
                 c.width = c.height = 64;
                 const g = c.getContext('2d');
                 const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,0.8)`);
-                gr.addColorStop(0.35, `hsla(${h},${s}%,${l}%,0.2)`);
+                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,0.9)`);
+                gr.addColorStop(0.35, `hsla(${h},${s}%,${l}%,0.28)`);
                 gr.addColorStop(1, `hsla(${h},${s}%,${l}%,0)`);
                 g.fillStyle = gr;
                 g.fillRect(0, 0, 64, 64);
                 return c;
             }
-            const glowWarm = makeGlow(35, 100, 62);
-            const glowFly = makeGlow(62, 100, 66);
+            const glowWarm = makeGlow(35, 100, 62);      // orange: trees, pumpkins
+            const glowFly = makeGlow(62, 100, 66);       // yellow-green: fireflies
 
-            /* Motion Field & TensorFlow Segmentation Setup */
+            /* ------------------------------------------------------------------ */
+            /*  Motion field (same tuned logic as the garden and aquarium)         */
+            /* ------------------------------------------------------------------ */
             const SW = 64, SH = 36;
             const mf = new Float32Array(SW * SH);
+            const raw = new Float32Array(SW * SH);
+            const prev = new Float32Array(SW * SH);
+            const cur = new Float32Array(SW * SH);
             const trail = new Float32Array(SW * SH);
-            let net = null, segmenting = false;
+            const camCanvas = document.createElement('canvas');
+            camCanvas.width = SW; camCanvas.height = SH;
+            const cctx = camCanvas.getContext('2d', { willReadFrequently: true });
 
             let camOn = false, stream = null, devices = [], devIdx = 0;
-            let mirror = true, sens = 1, demo = true, debug = false;
+            let mirror = false, sens = 1, demo = true, debug = false, havePrev = false, lastVT = -1;
+
+            /* ------------------------------------------------------------------ */
+            /*  Focus filters: zone + "one person" lock (all local, no extra libs) */
+            /* ------------------------------------------------------------------ */
+            const cand = new Float32Array(SW * SH);      // this frame's candidate movement (screen space)
+            const lab = new Int16Array(SW * SH);
+            const stk = new Int16Array(SW * SH);
+            let zone = null;                             // {x0,y0,x1,y1} as 0..1 of the screen; null = whole view
+            let pmode = 0;                               // 0 all movement, 1 only inside zone, 2 one person (inside zone)
+            let minArea = 10;                            // smallest blob (grid cells) that can become "the person"
+            let lock = null;                             // {x,y,t} grid position of the person being followed
+            let zoneEdit = false, dragA = null;
+            const LOCK_R = 11, LOCK_HOLD = 5000;         // grid cells around the person that still count; ms before the lock is dropped
+            const MODE_NAMES = ['All movement', 'Only inside the zone', 'One person (largest mover in the zone)'];
+            function saveSettings() { try { localStorage.setItem('afg-focus', JSON.stringify({ zone, pmode, minArea })); } catch (e) { } }
+            function loadSettings() {
+                try {
+                    const o = JSON.parse(localStorage.getItem('afg-focus') || 'null');
+                    if (o) { zone = o.zone || null; pmode = o.pmode | 0; minArea = o.minArea || 10; }
+                } catch (e) { }
+            }
+
+            function filterCandidates(now) {
+                if (pmode >= 1 && zone) {
+                    const x0 = zone.x0 * SW, x1 = zone.x1 * SW, y0 = zone.y0 * SH, y1 = zone.y1 * SH;
+                    for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+                        if (x + 0.5 < x0 || x + 0.5 > x1 || y + 0.5 < y0 || y + 0.5 > y1) cand[y * SW + x] = 0;
+                    }
+                }
+                if (pmode < 2) return;
+
+                // group moving cells into blobs
+                lab.fill(0);
+                const comps = [];
+                for (let i = 0; i < cand.length; i++) {
+                    if (cand[i] <= 0 || lab[i]) continue;
+                    const id = comps.length + 1;
+                    let sp = 0, area = 0, sx = 0, sy = 0;
+                    stk[sp++] = i; lab[i] = id;
+                    while (sp) {
+                        const j = stk[--sp], cx = j % SW, cy = (j / SW) | 0;
+                        area++; sx += cx; sy += cy;
+                        if (cx > 0 && cand[j - 1] > 0 && !lab[j - 1]) { lab[j - 1] = id; stk[sp++] = j - 1; }
+                        if (cx < SW - 1 && cand[j + 1] > 0 && !lab[j + 1]) { lab[j + 1] = id; stk[sp++] = j + 1; }
+                        if (cy > 0 && cand[j - SW] > 0 && !lab[j - SW]) { lab[j - SW] = id; stk[sp++] = j - SW; }
+                        if (cy < SH - 1 && cand[j + SW] > 0 && !lab[j + SW]) { lab[j + SW] = id; stk[sp++] = j + SW; }
+                    }
+                    comps.push({ id, area, x: sx / area, y: sy / area });
+                }
+
+                if (!lock) {                                  // nobody followed yet: the largest big-enough mover becomes "the person"
+                    let best = null;
+                    for (const c of comps) if (c.area >= minArea && (!best || c.area > best.area)) best = c;
+                    if (best) lock = { x: best.x, y: best.y, t: now };
+                }
+                const keep = new Uint8Array(comps.length + 1);
+                if (lock) {
+                    let sx = 0, sy = 0, sa = 0;
+                    for (const c of comps) {
+                        if (Math.hypot(c.x - lock.x, (c.y - lock.y) * 1.6) <= LOCK_R) {   // arms / legs near the person count too
+                            keep[c.id] = 1; sx += c.x * c.area; sy += c.y * c.area; sa += c.area;
+                        }
+                    }
+                    if (sa > 0) { lock.x += (sx / sa - lock.x) * 0.6; lock.y += (sy / sa - lock.y) * 0.6; lock.t = now; }
+                    else if (now - lock.t > LOCK_HOLD) lock = null;
+                }
+                for (let i = 0; i < cand.length; i++) if (cand[i] > 0 && !keep[lab[i]]) cand[i] = 0;
+            }
 
             function mfAt(X, Y) {
                 const cx = (X / W * SW) | 0, cy = (Y / H * SH) | 0;
@@ -241,85 +320,39 @@
                 }
             }
 
-            async function initTensorFlow() {
-                try {
-                    toast('Loading TensorFlow BodyPix model...');
-                    await tf.setBackend('webgl');
-                    net = await bodyPix.load({
-                        architecture: 'MobileNetV1',
-                        outputStride: 16,
-                        multiplier: 0.5,
-                        quantBytes: 2
-                    });
-                    toast('TensorFlow model loaded successfully!');
-                } catch (e) {
-                    toast('TensorFlow init failed, falling back to frame diff.');
-                }
-            }
+            function processCamera() {
+                if (!camOn || video.readyState < 2) return;
+                if (video.currentTime === lastVT) return;
+                lastVT = video.currentTime;
+                cctx.drawImage(video, 0, 0, SW, SH);
+                const d = cctx.getImageData(0, 0, SW, SH).data;
 
-            async function updateCameraDevices() {
-                try {
-                    const devs = await navigator.mediaDevices.enumerateDevices();
-                    devices = devs.filter(d => d.kind === 'videoinput');
-                } catch (e) {}
-            }
-
-            async function startCamera(deviceId) {
-                try {
-                    if (stream) {
-                        stream.getTracks().forEach(t => t.stop());
+                const thr = 24 / sens, range = 35 / sens;
+                let over = 0;
+                for (let y = 0; y < SH; y++) {
+                    for (let x = 0; x < SW; x++) {
+                        const i = y * SW + x, p = i * 4;
+                        const g = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
+                        cur[i] = g;
+                        const diff = havePrev ? Math.abs(g - prev[i]) : 0;
+                        const v = diff > thr ? Math.min(1, (diff - thr) / range) : 0;
+                        if (diff > thr) over++;
+                        raw[y * SW + (mirror ? SW - 1 - x : x)] = v;
                     }
-                    const constraints = {
-                        video: deviceId ? { deviceId: { exact: deviceId } } : { width: 640, height: 480 },
-                        audio: false
-                    };
-                    stream = await navigator.mediaDevices.getUserMedia(constraints);
-                    video.srcObject = stream;
-                    await video.play();
-                    camOn = true; demo = false;
-                    await updateCameraDevices();
-                    if (!net) await initTensorFlow();
-                    hideIntro();
-                    toast('Camera active (Mirror: ' + (mirror ? 'ON' : 'OFF') + ')');
-                } catch (e) {
-                    toast('Camera failed. Using mouse demo mode.');
                 }
-            }
-
-            async function switchCamera() {
-                if (!camOn || devices.length <= 1) {
-                    toast('No alternative cameras found');
-                    return;
-                }
-                devIdx = (devIdx + 1) % devices.length;
-                await startCamera(devices[devIdx].deviceId);
-                toast('Switched camera');
-            }
-
-            async function processCamera() {
-                if (!camOn || video.readyState < 2 || segmenting || !net) return;
-                segmenting = true;
-                try {
-                    const segmentation = await net.segmentPerson(video, {
-                        internalResolution: 'low',
-                        segmentationThreshold: 0.7
-                    });
-                    
-                    const data = segmentation.data;
-                    for (let y = 0; y < SH; y++) {
-                        for (let x = 0; x < SW; x++) {
-                            const vx = Math.floor(x / SW * segmentation.width);
-                            const vy = Math.floor(y / SH * segmentation.height);
-                            const idx = vy * segmentation.width + vx;
-                            const targetIdx = y * SW + (mirror ? SW - 1 - x : x);
-
-                            if (data[idx] === 1) {
-                                mf[targetIdx] = Math.min(1, mf[targetIdx] + 0.45 * sens);
-                            }
-                        }
+                for (let i = 0; i < prev.length; i++) prev[i] = prev[i] * 0.4 + cur[i] * 0.6;
+                if (!havePrev) { havePrev = true; return; }
+                if (over > SW * SH * 0.55) return;     // auto-exposure flash: ignore frame
+                for (let y = 1; y < SH - 1; y++) {
+                    for (let x = 1; x < SW - 1; x++) {
+                        const i = y * SW + x;
+                        const nb = Math.max(raw[i - 1], raw[i + 1], raw[i - SW], raw[i + SW]) * 0.85;
+                        const v = Math.max(raw[i], nb);
+                        cand[i] = v > 0.35 ? v : 0;
                     }
-                } catch (e) {}
-                segmenting = false;
+                }
+                filterCandidates(performance.now());
+                for (let i = 0; i < cand.length; i++) if (cand[i] > mf[i]) mf[i] = cand[i];
             }
 
             const RX = 8, RY = 5;
@@ -345,7 +378,9 @@
                 }
             }
 
-            /* Scene Background & Grove Elements */
+            /* ------------------------------------------------------------------ */
+            /*  Night sky, moon, ground                                            */
+            /* ------------------------------------------------------------------ */
             const bg = document.createElement('canvas');
             const vig = document.createElement('canvas');
             let stars = [];
@@ -379,11 +414,12 @@
                 b.globalCompositeOperation = 'source-over';
                 b.fillStyle = '#fff3d6';
                 b.beginPath(); b.arc(mx, my, 40 * sc, 0, TAU); b.fill();
-                b.fillStyle = 'rgba(230, 200, 150, 0.35)';
+                b.fillStyle = 'rgba(230, 200, 150, 0.35)';       // faint craters
                 for (const [dx, dy, r] of [[-10, -8, 8], [12, 6, 6], [-4, 14, 5]]) {
                     b.beginPath(); b.arc(mx + dx * sc, my + dy * sc, r * sc, 0, TAU); b.fill();
                 }
 
+                // distant hills
                 b.fillStyle = 'rgba(30, 22, 40, 0.8)';
                 b.beginPath(); b.moveTo(0, H * 0.55);
                 for (let x = 0; x <= W; x += W / 24) b.lineTo(x, H * (0.5 + 0.04 * Math.sin(x * 0.004) + 0.025 * Math.sin(x * 0.011 + 1)));
@@ -396,9 +432,13 @@
                 v.fillStyle = vg; v.fillRect(0, 0, W, H);
             }
 
-            let trees = [], pumpkins = [], grassB = [], groundLeaves = [];
+            /* ------------------------------------------------------------------ */
+            /*  Trees, pumpkins, grass, ground leaves                              */
+            /* ------------------------------------------------------------------ */
             const LEAF_COLORS = ['#e8650a', '#f59a1c', '#d4380d', '#e0b020', '#b8430a', '#c2410c'];
+            let trees = [], pumpkins = [], grassB = [], groundLeaves = [];
             const GRASS_COLS = ['#2b3a22', '#1f2d1b', '#3a2a17', '#344524'];
+
             const PAL = {
                 green: ['#4f7d2b', '#6b9a33', '#86ad3c', '#3b6a2a'],
                 gold: ['#e8b923', '#f2cf45', '#d9a517'],
@@ -420,9 +460,9 @@
 
             function makeTree(x, y, s) {
                 const d = clamp((y / H - 0.58) / 0.33, 0, 1);
-                const top = H * (0.27 + 0.1 * d + rand(0, 0.08));
+                const top = H * (0.27 + 0.1 * d + rand(0, 0.08));          // where the canopy top should sit: sky stays roughly the top third
                 const h = Math.max(0.26 * H, (y - top) / 0.88);
-                const f = Math.min(h / (250 * sc), 1.35);
+                const f = Math.min(h / (250 * sc), 1.35);                              // size of leaves / trunk relative to height
                 const SWd = Math.round(h * 1.7), SHt = Math.round(h * 1.35);
                 const spr = document.createElement('canvas');
                 spr.width = Math.round(SWd * dpr); spr.height = Math.round(SHt * dpr);
@@ -440,10 +480,10 @@
                     g.strokeStyle = '#4a2b17';
                     g.lineWidth = wid;
                     g.beginPath(); g.moveTo(bx, by); g.quadraticCurveTo(cxm, cym, ex, ey); g.stroke();
-                    g.strokeStyle = 'rgba(190,130,80,0.4)';
+                    g.strokeStyle = 'rgba(190,130,80,0.4)';       // bark highlight
                     g.lineWidth = Math.max(0.8, wid * 0.22);
                     g.beginPath(); g.moveTo(bx - wid * 0.2, by); g.quadraticCurveTo(cxm - wid * 0.2, cym, ex - wid * 0.2, ey); g.stroke();
-                    if (depth <= 2) {
+                    if (depth <= 2) {                               // leaf clumps on the upper limbs only; trunk and first forks stay bare
                         const n = depth === 0 ? 26 : 10;
                         const rad = (depth === 0 ? 30 : 20) * f * sc;
                         for (let i = 0; i < n; i++) {
@@ -461,6 +501,7 @@
                     }
                 }
                 const ox = SWd / 2, oy = SHt - 4;
+                // flared trunk base
                 g.fillStyle = '#4a2b17';
                 g.beginPath(); g.moveTo(ox - trunkW * 0.9, oy); g.quadraticCurveTo(ox - trunkW * 0.4, oy - trunkW * 1.4, ox - trunkW * 0.5, oy - trunkW * 2.2);
                 g.lineTo(ox + trunkW * 0.5, oy - trunkW * 2.2); g.quadraticCurveTo(ox + trunkW * 0.4, oy - trunkW * 1.4, ox + trunkW * 0.9, oy); g.closePath(); g.fill();
@@ -470,7 +511,7 @@
                 const ls = 7.5 * f * sc;
                 for (const lf of leaves) {
                     const col = pickColor(mix);
-                    const dark = lf.z < 0.35;
+                    const dark = lf.z < 0.35;                       // inner leaves are darker for depth
                     g.save();
                     g.translate(lf.x, lf.y); g.rotate(lf.r);
                     const sz = ls * rand(0.7, 1.25);
@@ -482,7 +523,7 @@
                     g.bezierCurveTo(0.65, -0.6, 0.7, 0.4, 0, 1);
                     g.bezierCurveTo(-0.7, 0.4, -0.65, -0.6, 0, -1);
                     g.fill();
-                    if (!dark) {
+                    if (!dark) {                                    // midrib
                         g.strokeStyle = 'rgba(60,30,10,0.35)';
                         g.lineWidth = 0.12;
                         g.beginPath(); g.moveTo(0, -0.9); g.lineTo(0, 0.9); g.stroke();
@@ -539,103 +580,84 @@
                 }
             }
 
+            /* ------------------------------------------------------------------ */
+            /*  Fireflies: movement spawns them, a few drift by themselves         */
+            /* ------------------------------------------------------------------ */
             let ambient = [], flies = [];
-            const MAXFLY = 320;
+            const MAXFLY = 380;
 
             function seedAmbient() {
                 ambient = [];
-                // 120 dispersed gentle ambient sparkles throughout the entire screen space
-                for (let i = 0; i < 120; i++) {
+                for (let i = 0; i < 26; i++) {
                     ambient.push({
-                        x: rand(0, W), y: rand(H * 0.15, H * 0.98),
-                        vx: rand(-4, 4) * sc, vy: rand(-4, 4) * sc,
-                        size: rand(1.5, 3.8) * sc, ph: rand(0, TAU), sp: rand(0.8, 2.5)
+                        x: rand(0, W), y: rand(H * 0.4, H * 0.95),
+                        vx: rand(-8, 8) * sc, vy: rand(-8, 8) * sc,
+                        size: rand(2.5, 5) * sc, ph: rand(0, TAU), sp: rand(1, 2.4)
                     });
                 }
             }
 
             function addFly(x, y) {
-                const L = rand(3.0, 6.0);
-                const rx = gauss() * 65 * sc;
-                const ry = gauss() * 35 * sc;
+                const L = rand(3, 6.5);
                 flies.push({
-                    x: x + rx,
-                    y: y + ry,
-                    vx: rand(-18, 18) * sc, 
-                    vy: -rand(2, 14) * sc, 
-                    life: L, max: L,
-                    size: rand(3.0, 6.0) * sc, 
-                    ph: rand(0, TAU), 
-                    sp: rand(2, 5), 
-                    wob: rand(1.2, 2.8)
+                    x, y, vx: rand(-14, 14) * sc, vy: -rand(4, 22) * sc, life: L, max: L,
+                    size: rand(3, 6.5) * sc, ph: rand(0, TAU), sp: rand(3, 6), wob: rand(0.8, 2)
                 });
             }
 
             function updateFlies(dt, t) {
                 for (const f of ambient) {
-                    f.x += (f.vx + Math.sin(t * f.sp + f.ph) * 8 * sc) * dt;
-                    f.y += (f.vy + Math.cos(t * f.sp * 0.8 + f.ph) * 8 * sc) * dt;
+                    f.x += (f.vx + Math.sin(t * f.sp + f.ph) * 10 * sc) * dt;
+                    f.y += (f.vy + Math.cos(t * f.sp * 0.8 + f.ph) * 10 * sc) * dt;
                     if (f.x < 0) f.x = W; if (f.x > W) f.x = 0;
-                    if (f.y < 0) f.y = H; if (f.y > H) f.y = 0;
+                    if (f.y < H * 0.35) f.y = H * 0.35; if (f.y > H) f.y = H;
                 }
-
-                let sumX = 0, sumY = 0, count = 0;
-                for (let i = 0; i < mf.length; i++) {
-                    const v = mf[i];
-                    if (v > 0.35) {
-                        sumX += (i % SW) * v;
-                        sumY += ((i / SW) | 0) * v;
-                        count += v;
+                if (flies.length < MAXFLY) {
+                    for (let i = 0; i < mf.length; i++) {
+                        const v = mf[i];
+                        if (v > 0.4 && Math.random() < v * 0.06) {
+                            addFly(((i % SW) + Math.random()) / SW * W, (((i / SW) | 0) + Math.random()) / SH * H);
+                        }
                     }
                 }
-
-                if (count > 0.5 && flies.length < MAXFLY) {
-                    const cx = (sumX / count) / SW * W;
-                    const cy = (sumY / count) / SH * H;
-                    for (let k = 0; k < 2; k++) {
-                        addFly(cx, cy);
-                    }
-                }
-
                 for (let i = flies.length - 1; i >= 0; i--) {
                     const f = flies[i];
                     f.life -= dt;
                     if (f.life <= 0) { flies[i] = flies[flies.length - 1]; flies.pop(); continue; }
-                    f.vx += (Math.sin(t * f.wob + f.ph) * 26 * sc - f.vx) * dt * 1.2;
-                    f.vy += (-3 * sc + Math.cos(t * f.wob * 0.7 + f.ph) * 18 * sc - f.vy) * dt * 1.2;
+                    f.vx += (Math.sin(t * f.wob + f.ph) * 18 * sc - f.vx) * dt * 1.2;
+                    f.vy += (-8 * sc + Math.cos(t * f.wob * 0.8 + f.ph) * 10 * sc - f.vy) * dt * 1.2;
                     f.x += f.vx * dt; f.y += f.vy * dt;
                 }
             }
 
             function drawFlies(t) {
                 ctx.globalCompositeOperation = 'lighter';
-                // Render softly twinkling ambient sparkles dispersed throughout the background & grove
                 for (const f of ambient) {
-                    const g = 0.15 + 0.45 * Math.max(0, Math.sin(t * 1.8 * f.sp + f.ph));
-                    ctx.globalAlpha = g * 0.4;
-                    ctx.fillStyle = '#fffec8';
-                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.7, 0, TAU); ctx.fill();
-                    const sz = f.size * 3.5;
-                    ctx.globalAlpha = g * 0.15;
+                    const g = 0.35 + 0.65 * Math.max(0, Math.sin(t * 2.2 * f.sp + f.ph));
+                    ctx.globalAlpha = g * 0.85;
+                    ctx.fillStyle = '#fff4a0';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, TAU); ctx.fill();
+                    const sz = f.size * 7;
+                    ctx.globalAlpha = g * 0.5;
                     ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
                 }
-                // Render tracked user cluster fireflies
                 for (const f of flies) {
                     const a = f.life / f.max;
-                    const env = Math.min(1, (1 - a) * 4) * Math.min(1, a * 2.0);
-                    const g = env * (0.5 + 0.5 * Math.sin(t * f.sp + f.ph));
+                    const env = Math.min(1, (1 - a) * 6) * Math.min(1, a * 2.2);       // fade in, fade out
+                    const g = env * (0.55 + 0.45 * Math.sin(t * f.sp + f.ph));
                     if (g < 0.02) continue;
-                    ctx.globalAlpha = Math.min(1, g * 0.9);
-                    ctx.fillStyle = '#fffeb5';
-                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.75, 0, TAU); ctx.fill();
-                    const sz = f.size * 8.5;
-                    ctx.globalAlpha = g * 0.55;
+                    ctx.globalAlpha = Math.min(1, g * 1.1);
+                    ctx.fillStyle = '#fffbb8';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.8, 0, TAU); ctx.fill();
+                    const sz = f.size * 9;
+                    ctx.globalAlpha = g * 0.6;
                     ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
                 }
                 ctx.globalAlpha = 1;
                 ctx.globalCompositeOperation = 'source-over';
             }
 
+            /* falling leaves: gentle, ambient only */
             let leaves = [];
             function spawnLeaf() {
                 leaves.push({
@@ -659,6 +681,9 @@
                 ctx.globalAlpha = 1;
             }
 
+            /* ------------------------------------------------------------------ */
+            /*  Flora update (trees lean away, pumpkins glow near movement)        */
+            /* ------------------------------------------------------------------ */
             function updateFlora(dt, t, active) {
                 for (const tr of trees) {
                     const m = Math.max(mfAt(tr.x, tr.y - tr.h * 0.7), mfAt(tr.x, tr.y));
@@ -684,9 +709,9 @@
                 const swayX = Math.sin(t * 0.7 + tr.ph) * 5 * sc * tr.s + tr.push;
                 const k = swayX / tr.h;
                 ctx.save();
-                ctx.transform(1, 0, -k, 1, tr.x, tr.y);
+                ctx.transform(1, 0, -k, 1, tr.x, tr.y);          // shear from the base: tree bends, trunk stays rooted
                 ctx.drawImage(tr.spr, -tr.sw / 2, -tr.sh + 4, tr.sw, tr.sh);
-                if (tr.pop > 0.05) {
+                if (tr.pop > 0.05) {                              // leaves brighten when someone moves near
                     ctx.globalCompositeOperation = 'lighter';
                     ctx.globalAlpha = 0.14 * tr.pop;
                     ctx.drawImage(tr.spr, -tr.sw / 2, -tr.sh + 4, tr.sw, tr.sh);
@@ -707,10 +732,12 @@
                 ctx.translate(p.x, p.y);
                 ctx.rotate(p.tilt);
 
+                // ground shadow
                 ctx.fillStyle = 'rgba(8, 5, 10, 0.4)';
                 ctx.beginPath(); ctx.ellipse(0, r * 0.2, r * 1.15, r * 0.3, 0, 0, TAU); ctx.fill();
 
                 const glow = p.face ? 0.4 + 0.6 * p.pop + 0.06 * Math.sin(t * 5 + p.ph) : 0.8 * p.pop;
+                // outer warm glow
                 ctx.globalCompositeOperation = 'lighter';
                 ctx.globalAlpha = Math.min(0.9, 0.1 + glow * 0.55);
                 const gs = r * 5.2;
@@ -718,6 +745,7 @@
                 ctx.globalCompositeOperation = 'source-over';
                 ctx.globalAlpha = 1;
 
+                // body: overlapping lobes, darker at the sides
                 const lobes = [[-0.55, '#c2500a'], [0.55, '#c2500a'], [-0.28, '#e0670f'], [0.28, '#e0670f'], [0, '#f27d1c']];
                 for (const [dx, col] of lobes) {
                     ctx.fillStyle = col;
@@ -728,14 +756,16 @@
                 for (const dx of [-0.28, 0.28]) {
                     ctx.beginPath(); ctx.moveTo(dx * r, -r * 1.14); ctx.quadraticCurveTo(dx * r * 1.5, -r * 0.55, dx * r, 0.02 * r); ctx.stroke();
                 }
+                // soft highlight
                 ctx.fillStyle = 'rgba(255, 220, 150, 0.25)';
                 ctx.beginPath(); ctx.ellipse(-r * 0.25, -r * 0.85, r * 0.2, r * 0.3, -0.4, 0, TAU); ctx.fill();
+                // stem
                 ctx.fillStyle = '#4a5a22';
                 ctx.beginPath();
                 ctx.moveTo(-r * 0.1, -r * 1.12); ctx.lineTo(-r * 0.06, -r * 1.42); ctx.lineTo(r * 0.12, -r * 1.38); ctx.lineTo(r * 0.1, -r * 1.12);
                 ctx.closePath(); ctx.fill();
 
-                if (p.face) {
+                if (p.face) {                                   // glowing carved face
                     ctx.globalCompositeOperation = 'lighter';
                     ctx.globalAlpha = Math.min(1, glow);
                     ctx.fillStyle = '#ffd35a';
@@ -781,6 +811,14 @@
                 ctx.globalCompositeOperation = 'source-over';
             }
 
+            /* ------------------------------------------------------------------ */
+            /*  Main loop                                                          */
+            /* ------------------------------------------------------------------ */
+            const dbg = document.createElement('canvas');
+            dbg.width = SW; dbg.height = SH;
+            const dctx = dbg.getContext('2d');
+            const dimg = dctx.createImageData(SW, SH);
+
             function resize() {
                 dpr = Math.min(window.devicePixelRatio || 1, 1.5);
                 W = window.innerWidth; H = window.innerHeight;
@@ -818,6 +856,43 @@
                 leaves = leaves.filter(l => !l.dead);
             }
 
+            function drawAura() {
+                ctx.globalCompositeOperation = 'lighter';
+                const cw = W / SW, chh = H / SH;
+                for (let i = 0; i < trail.length; i++) {
+                    const v = trail[i];
+                    if (v < 0.2) continue;
+                    const cx = i % SW, cy = (i / SW) | 0;
+                    const sz = (50 + 70 * v) * sc;
+                    ctx.globalAlpha = Math.min(0.12, v * 0.16);
+                    ctx.drawImage(glowFly, (cx + 0.5) * cw - sz / 2, (cy + 0.5) * chh - sz / 2, sz, sz);
+                }
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            function drawFocusOverlay() {
+                let z = zone;
+                if (zoneEdit && dragA) z = dragA.rect;
+                if (!z || !(zoneEdit || debug)) {
+                    if (!debug || !lock) return;
+                }
+                if (z && (zoneEdit || debug)) {
+                    const x0 = z.x0 * W, y0 = z.y0 * H, x1 = z.x1 * W, y1 = z.y1 * H;
+                    if (zoneEdit) {                              // dim everything outside the active area
+                        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+                        ctx.fillRect(0, 0, W, y0); ctx.fillRect(0, y1, W, H - y1);
+                        ctx.fillRect(0, y0, x0, y1 - y0); ctx.fillRect(x1, y0, W - x1, y1 - y0);
+                    }
+                    ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2; ctx.setLineDash([10, 8]);
+                    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); ctx.setLineDash([]);
+                }
+                if (debug && lock) {                             // ring where the followed person is
+                    ctx.strokeStyle = 'rgba(120,255,160,0.9)'; ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc((lock.x + 0.5) / SW * W, (lock.y + 0.5) / SH * H, LOCK_R / SW * W * 0.5, 0, TAU); ctx.stroke();
+                }
+            }
+
             function draw(t) {
                 ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
                 ctx.globalAlpha = 1;
@@ -828,16 +903,19 @@
                 for (const gl of groundLeaves) drawLeafShape(gl.x, gl.y, gl.rot, gl.size, gl.col, 0.75);
 
                 drawGrass(t);
+                // trees and pumpkins sorted together by depth
                 let ti = 0, pi = 0;
                 while (ti < trees.length || pi < pumpkins.length) {
                     if (pi >= pumpkins.length || (ti < trees.length && trees[ti].y <= pumpkins[pi].y)) drawTree(trees[ti++], t);
                     else drawPumpkin(pumpkins[pi++], t);
                 }
 
+                drawAura();
                 for (const l of leaves) drawLeafShape(l.x, l.y, l.rot, l.size, l.col, 0.85);
                 drawFlies(t);
 
                 ctx.drawImage(vig, 0, 0, W, H);
+                drawFocusOverlay();
 
                 if (debug) {
                     for (let i = 0; i < mf.length; i++) {
@@ -852,11 +930,6 @@
             }
 
             let last = performance.now(), T = 0;
-            const dbg = document.createElement('canvas');
-            dbg.width = SW; dbg.height = SH;
-            const dctx = dbg.getContext('2d');
-            const dimg = dctx.createImageData(SW, SH);
-
             function frame(now) {
                 const dt = Math.min(0.05, (now - last) / 1000);
                 last = now; T += dt;
@@ -865,8 +938,11 @@
                 requestAnimationFrame(frame);
             }
 
+            /* ------------------------------------------------------------------ */
+            /*  Camera, input, UI                                                  */
+            /* ------------------------------------------------------------------ */
             const toastEl = $('toast'), hintEl = $('hint'), introEl = $('intro');
-            let toastTimer = 0, hintTimer = 0;
+            let toastTimer = 0, hintTimer = 0, cursorTimer = 0;
             function toast(msg, ms = 2400) {
                 toastEl.textContent = msg;
                 toastEl.classList.add('show');
@@ -880,35 +956,104 @@
             }
             function hideIntro() { introEl.classList.add('hide'); showHint(10); }
 
-            $('bCam').addEventListener('click', () => { startCamera(); });
-            $('bMouse').addEventListener('click', () => { camOn = false; demo = false; hideIntro(); toast('Mouse / touch mode active'); });
+            function stopCamera() {
+                if (stream) stream.getTracks().forEach(t => t.stop());
+                stream = null; camOn = false;
+            }
+            async function startCamera(id) {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('Camera API not available. Open this file in Chrome or Edge.');
+                }
+                stopCamera();
+                const v = { width: { ideal: 640 }, height: { ideal: 480 } };
+                if (id) v.deviceId = { exact: id };
+                stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+                video.srcObject = stream;
+                await video.play();
+                camOn = true; demo = false; havePrev = false; lastVT = -1;
+                const list = await navigator.mediaDevices.enumerateDevices();
+                devices = list.filter(d => d.kind === 'videoinput');
+                const tr = stream.getVideoTracks()[0];
+                const sid = tr.getSettings().deviceId;
+                devIdx = Math.max(0, devices.findIndex(d => d.deviceId === sid));
+                const isDepth = l => /depth|infrared|\bir\b|stereo/i.test(l || '') && !/rgb|colou?r/i.test(l || '');
+                if (!id && isDepth(tr.label)) {              // RealSense: prefer its RGB camera over depth / infrared
+                    const rgb = devices.find(d => !isDepth(d.label) && d.deviceId !== sid);
+                    if (rgb) { devIdx = devices.indexOf(rgb); return startCamera(rgb.deviceId); }
+                }
+                toast('Camera ' + (devIdx + 1) + '/' + devices.length + ': ' + (tr.label || 'camera') + (devices.length > 1 ? '  (C = next)' : ''), 4000);
+            }
+            async function listCameras() {
+                try {
+                    const l = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+                    toast(l.length + ' camera(s) seen: ' + (l.map(d => d.label || '(no name yet)').join(' | ') || 'none'), 9000);
+                } catch (e) { toast('Could not list cameras', 4000); }
+            }
+            async function nextCamera() {
+                try {
+                    const l = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+                    if (l.length) devices = l;
+                } catch (e) { }
+                if (devices.length < 2) { listCameras(); return; }
+                devIdx = (devIdx + 1) % devices.length;
+                startCamera(devices[devIdx].deviceId).catch(e => toast(e.message || 'Could not open that camera', 4000));
+            }
 
-            window.addEventListener('pointermove', e => { if (!camOn) inject(e.clientX, e.clientY, 3.5, 1); });
-            window.addEventListener('pointerdown', e => { if (!camOn) inject(e.clientX, e.clientY, 6, 1); });
+            $('bCam').addEventListener('click', () => { startCamera().then(hideIntro).catch(e => toast((e && e.message) || 'Could not open the camera', 5000)); });
+            $('bMouse').addEventListener('click', () => { demo = false; hideIntro(); toast('Move your mouse or finger over the grove'); });
 
-            window.addEventListener('keydown', e => {
-                const k = e.key.toLowerCase();
-                if (k === 'f') {
-                    if (document.fullscreenElement) document.exitFullscreen();
-                    else document.documentElement.requestFullscreen().catch(() => {});
-                } else if (k === 'm') {
-                    mirror = !mirror;
-                    toast('Camera Mirror: ' + (mirror ? 'ON' : 'OFF'));
-                } else if (k === 'c') {
-                    switchCamera();
-                } else if (k === 's') {
-                    sens = sens === 1 ? 1.5 : (sens === 1.5 ? 0.7 : 1);
-                    toast('Sensitivity: ' + (sens === 1 ? 'Normal' : (sens === 1.5 ? 'High' : 'Low')));
-                } else if (k === 'd') {
-                    debug = !debug;
-                    toast('Debug view ' + (debug ? 'on' : 'off'));
-                } else if (k === 'a') {
-                    demo = !demo;
-                    toast('Demo mode ' + (demo ? 'on' : 'off'));
+            function showCursor() {
+                document.body.style.cursor = 'default';
+                clearTimeout(cursorTimer);
+                cursorTimer = setTimeout(() => { document.body.style.cursor = 'none'; }, 2500);
+            }
+            function normRect(a, bx, by) {
+                return { x0: Math.min(a.x, bx), y0: Math.min(a.y, by), x1: Math.max(a.x, bx), y1: Math.max(a.y, by) };
+            }
+            window.addEventListener('pointermove', e => {
+                showCursor();
+                if (zoneEdit) { if (dragA) dragA.rect = normRect(dragA, clamp(e.clientX / W, 0, 1), clamp(e.clientY / H, 0, 1)); return; }
+                inject(e.clientX, e.clientY, 3.5, 1);
+            });
+            window.addEventListener('pointerdown', e => {
+                if (zoneEdit) { const x = e.clientX / W, y = e.clientY / H; dragA = { x, y, rect: normRect({ x, y }, x, y) }; return; }
+                inject(e.clientX, e.clientY, 6, 1);
+            });
+            window.addEventListener('pointerup', () => {
+                if (!zoneEdit || !dragA) return;
+                const r = dragA.rect; dragA = null;
+                if (r.x1 - r.x0 > 0.05 && r.y1 - r.y0 > 0.05) {
+                    zone = r; lock = null; saveSettings();
+                    if (pmode === 0) { pmode = 1; toast('Zone set. Mode: ' + MODE_NAMES[pmode] + '  (P to change)', 3500); }
+                    else toast('Zone set', 2000);
                 }
             });
 
+            function toggleFullscreen() {
+                if (document.fullscreenElement) document.exitFullscreen();
+                else document.documentElement.requestFullscreen().catch(() => { });
+            }
+            window.addEventListener('keydown', e => {
+                const k = e.key.toLowerCase();
+                if (k === 'f') toggleFullscreen();
+                else if (k === 'm') { mirror = !mirror; mf.fill(0); trail.fill(0); toast('Mirror ' + (mirror ? 'on' : 'off')); }
+                else if (k === 'd') { debug = !debug; }
+                else if (k === 'c') nextCamera();
+                else if (k === 'i') listCameras();
+                else if (k === 'a') { demo = !demo; toast('Demo firefly ' + (demo ? 'on' : 'off')); }
+                else if (k === 'h') { hintEl.classList.toggle('show'); }
+                else if (k === 'p') { pmode = (pmode + 1) % 3; lock = null; mf.fill(0); saveSettings(); toast('Mode: ' + MODE_NAMES[pmode] + ((pmode > 0 && !zone) ? '  (no zone drawn yet: press Z)' : ''), 3500); }
+                else if (k === 'z') { zoneEdit = !zoneEdit; dragA = null; toast(zoneEdit ? 'Drag on the screen to draw the active area. Press Z again when done.' : 'Zone editing off', 3500); }
+                else if (k === 'x') { zone = null; lock = null; saveSettings(); toast('Zone cleared: whole view is active'); }
+                else if (k === 'l') { lock = null; mf.fill(0); toast('Released: the next person to move will be followed'); }
+                else if (k === '[') { minArea = Math.max(2, minArea - 2); saveSettings(); toast('Minimum size to follow: ' + minArea); }
+                else if (k === ']') { minArea = Math.min(80, minArea + 2); saveSettings(); toast('Minimum size to follow: ' + minArea); }
+                else if (k === '-' || k === '_') { sens = Math.max(0.4, sens / 1.2); toast('Sensitivity ' + sens.toFixed(2)); }
+                else if (k === '=' || k === '+') { sens = Math.min(4, sens * 1.2); toast('Sensitivity ' + sens.toFixed(2)); }
+            });
             window.addEventListener('resize', resize);
+
+            loadSettings();
             resize();
             requestAnimationFrame(frame);
         })();
