@@ -257,6 +257,45 @@
                 }
             }
 
+            async function updateCameraDevices() {
+                try {
+                    const devs = await navigator.mediaDevices.enumerateDevices();
+                    devices = devs.filter(d => d.kind === 'videoinput');
+                } catch (e) {}
+            }
+
+            async function startCamera(deviceId) {
+                try {
+                    if (stream) {
+                        stream.getTracks().forEach(t => t.stop());
+                    }
+                    const constraints = {
+                        video: deviceId ? { deviceId: { exact: deviceId } } : { width: 640, height: 480 },
+                        audio: false
+                    };
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    video.srcObject = stream;
+                    await video.play();
+                    camOn = true; demo = false;
+                    await updateCameraDevices();
+                    if (!net) await initTensorFlow();
+                    hideIntro();
+                    toast('Camera active (Mirror: ' + (mirror ? 'ON' : 'OFF') + ')');
+                } catch (e) {
+                    toast('Camera failed. Using mouse demo mode.');
+                }
+            }
+
+            async function switchCamera() {
+                if (!camOn || devices.length <= 1) {
+                    toast('No alternative cameras found');
+                    return;
+                }
+                devIdx = (devIdx + 1) % devices.length;
+                await startCamera(devices[devIdx].deviceId);
+                toast('Switched camera');
+            }
+
             async function processCamera() {
                 if (!camOn || video.readyState < 2 || segmenting || !net) return;
                 segmenting = true;
@@ -275,7 +314,7 @@
                             const targetIdx = y * SW + (mirror ? SW - 1 - x : x);
 
                             if (data[idx] === 1) {
-                                mf[targetIdx] = Math.min(1, mf[targetIdx] + 0.45);
+                                mf[targetIdx] = Math.min(1, mf[targetIdx] + 0.45 * sens);
                             }
                         }
                     }
@@ -505,18 +544,18 @@
 
             function seedAmbient() {
                 ambient = [];
-                for (let i = 0; i < 26; i++) {
+                // 120 dispersed gentle ambient sparkles throughout the entire screen space
+                for (let i = 0; i < 120; i++) {
                     ambient.push({
-                        x: rand(0, W), y: rand(H * 0.4, H * 0.95),
-                        vx: rand(-8, 8) * sc, vy: rand(-8, 8) * sc,
-                        size: rand(2.5, 5) * sc, ph: rand(0, TAU), sp: rand(1, 2.4)
+                        x: rand(0, W), y: rand(H * 0.15, H * 0.98),
+                        vx: rand(-4, 4) * sc, vy: rand(-4, 4) * sc,
+                        size: rand(1.5, 3.8) * sc, ph: rand(0, TAU), sp: rand(0.8, 2.5)
                     });
                 }
             }
 
             function addFly(x, y) {
                 const L = rand(3.0, 6.0);
-                // Wide, natural elliptical scatter so it never looks like a solid ball
                 const rx = gauss() * 65 * sc;
                 const ry = gauss() * 35 * sc;
                 flies.push({
@@ -534,13 +573,12 @@
 
             function updateFlies(dt, t) {
                 for (const f of ambient) {
-                    f.x += (f.vx + Math.sin(t * f.sp + f.ph) * 10 * sc) * dt;
-                    f.y += (f.vy + Math.cos(t * f.sp * 0.8 + f.ph) * 10 * sc) * dt;
+                    f.x += (f.vx + Math.sin(t * f.sp + f.ph) * 8 * sc) * dt;
+                    f.y += (f.vy + Math.cos(t * f.sp * 0.8 + f.ph) * 8 * sc) * dt;
                     if (f.x < 0) f.x = W; if (f.x > W) f.x = 0;
-                    if (f.y < H * 0.35) f.y = H * 0.35; if (f.y > H) f.y = H;
+                    if (f.y < 0) f.y = H; if (f.y > H) f.y = 0;
                 }
 
-                // Centroid tracking for person/cursor motion
                 let sumX = 0, sumY = 0, count = 0;
                 for (let i = 0; i < mf.length; i++) {
                     const v = mf[i];
@@ -554,7 +592,6 @@
                 if (count > 0.5 && flies.length < MAXFLY) {
                     const cx = (sumX / count) / SW * W;
                     const cy = (sumY / count) / SH * H;
-                    // Controlled cluster emission for a natural wispy trail
                     for (let k = 0; k < 2; k++) {
                         addFly(cx, cy);
                     }
@@ -564,7 +601,6 @@
                     const f = flies[i];
                     f.life -= dt;
                     if (f.life <= 0) { flies[i] = flies[flies.length - 1]; flies.pop(); continue; }
-                    // Dispersed natural wandering drift
                     f.vx += (Math.sin(t * f.wob + f.ph) * 26 * sc - f.vx) * dt * 1.2;
                     f.vy += (-3 * sc + Math.cos(t * f.wob * 0.7 + f.ph) * 18 * sc - f.vy) * dt * 1.2;
                     f.x += f.vx * dt; f.y += f.vy * dt;
@@ -573,21 +609,22 @@
 
             function drawFlies(t) {
                 ctx.globalCompositeOperation = 'lighter';
+                // Render softly twinkling ambient sparkles dispersed throughout the background & grove
                 for (const f of ambient) {
-                    const g = 0.35 + 0.65 * Math.max(0, Math.sin(t * 2.2 * f.sp + f.ph));
-                    ctx.globalAlpha = g * 0.85;
-                    ctx.fillStyle = '#fff4a0';
-                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, TAU); ctx.fill();
-                    const sz = f.size * 7;
-                    ctx.globalAlpha = g * 0.5;
+                    const g = 0.15 + 0.45 * Math.max(0, Math.sin(t * 1.8 * f.sp + f.ph));
+                    ctx.globalAlpha = g * 0.4;
+                    ctx.fillStyle = '#fffec8';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.7, 0, TAU); ctx.fill();
+                    const sz = f.size * 3.5;
+                    ctx.globalAlpha = g * 0.15;
                     ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
                 }
+                // Render tracked user cluster fireflies
                 for (const f of flies) {
                     const a = f.life / f.max;
                     const env = Math.min(1, (1 - a) * 4) * Math.min(1, a * 2.0);
                     const g = env * (0.5 + 0.5 * Math.sin(t * f.sp + f.ph));
                     if (g < 0.02) continue;
-                    // Softer, less concentrated core opacity for a dispersed cluster look
                     ctx.globalAlpha = Math.min(1, g * 0.9);
                     ctx.fillStyle = '#fffeb5';
                     ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.75, 0, TAU); ctx.fill();
@@ -843,20 +880,6 @@
             }
             function hideIntro() { introEl.classList.add('hide'); showHint(10); }
 
-            async function startCamera() {
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-                    video.srcObject = stream;
-                    await video.play();
-                    camOn = true; demo = false;
-                    await initTensorFlow();
-                    hideIntro();
-                    toast('TensorFlow BodyPix tracking active.');
-                } catch (e) {
-                    toast('Camera failed. Using mouse demo mode.');
-                }
-            }
-
             $('bCam').addEventListener('click', () => { startCamera(); });
             $('bMouse').addEventListener('click', () => { camOn = false; demo = false; hideIntro(); toast('Mouse / touch mode active'); });
 
@@ -868,6 +891,14 @@
                 if (k === 'f') {
                     if (document.fullscreenElement) document.exitFullscreen();
                     else document.documentElement.requestFullscreen().catch(() => {});
+                } else if (k === 'm') {
+                    mirror = !mirror;
+                    toast('Camera Mirror: ' + (mirror ? 'ON' : 'OFF'));
+                } else if (k === 'c') {
+                    switchCamera();
+                } else if (k === 's') {
+                    sens = sens === 1 ? 1.5 : (sens === 1.5 ? 0.7 : 1);
+                    toast('Sensitivity: ' + (sens === 1 ? 'Normal' : (sens === 1.5 ? 'High' : 'Low')));
                 } else if (k === 'd') {
                     debug = !debug;
                     toast('Debug view ' + (debug ? 'on' : 'off'));
