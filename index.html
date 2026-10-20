@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Autumn Firefly Grove &mdash; Focused Sparkle Tracking</title>
+    <title>Autumn Firefly Grove &mdash; AI BodyPix Tracking</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
         html, body {
@@ -57,12 +57,12 @@
     <div id="intro">
         <div class="card">
             <h1>Autumn Firefly Grove</h1>
-            <p>Focused Sparkle Tracking &mdash; dense, brilliant firefly swarms tightly follow your motion hotspots.</p>
+            <p>TensorFlow BodyPix AI Isolation &mdash; fireflies and sparkles strictly follow your body shape while ignoring background noise.</p>
             <div class="btns">
                 <button id="bCam">Start Camera Stream</button>
                 <button id="bMouse" class="ghost">Use Mouse / Touch</button>
             </div>
-            <p class="small">Press F for fullscreen &middot; D for debug view.</p>
+            <p class="small">Press F for fullscreen &middot; D for AI motion debug view.</p>
         </div>
     </div>
     <div id="toast"></div>
@@ -85,14 +85,14 @@
                 c.width = c.height = 64;
                 const g = c.getContext('2d');
                 const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,1)`);
-                gr.addColorStop(0.3, `hsla(${h},${s}%,${l}%,0.4)`);
+                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,0.9)`);
+                gr.addColorStop(0.35, `hsla(${h},${s}%,${l}%,0.28)`);
                 gr.addColorStop(1, `hsla(${h},${s}%,${l}%,0)`);
                 g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
                 return c;
             }
             const glowWarm = makeGlow(35, 100, 62);
-            const glowFly = makeGlow(55, 100, 70);
+            const glowFly = makeGlow(62, 100, 66);
 
             const SW = 64, SH = 36;
             const mf = new Float32Array(SW * SH);
@@ -132,7 +132,7 @@
                         multiplier: 0.5,
                         quantBytes: 2
                     });
-                    toast('AI Tracking Active!');
+                    toast('AI Model Active! Stand in view.');
                 } catch (e) {
                     toast('TensorFlow init failed.');
                 }
@@ -156,7 +156,7 @@
                             const targetIdx = y * SW + (mirror ? SW - 1 - x : x);
 
                             if (data[idx] === 1) {
-                                mf[targetIdx] = 1.0;
+                                mf[targetIdx] = 1.0; // Strong signal where human body is detected
                             }
                         }
                     }
@@ -199,7 +199,8 @@
                 v.fillStyle = vg; v.fillRect(0, 0, W, H);
             }
 
-            let trees = [], pumpkins = [];
+            let trees = [], pumpkins = [], grassB = [];
+            const GRASS_COLS = ['#2b3a22', '#1f2d1b', '#3a2a17', '#344524'];
 
             function makeTree(x, y, s) {
                 const h = Math.max(0.26 * H, (y - H * 0.3) / 0.88);
@@ -212,7 +213,7 @@
                 g.fillRect(SWd / 2 - 6, SHt - 60, 12, 60);
                 g.fillStyle = '#4f7d2b';
                 g.beginPath(); g.arc(SWd / 2, SHt - 90, h * 0.35, 0, TAU); g.fill();
-                return { x, y, s, h, spr, sw: SWd, sh: SHt, ph: rand(0, TAU), pop: 0 };
+                return { x, y, s, h, spr, sw: SWd, sh: SHt, ph: rand(0, TAU), push: 0, pop: 0 };
             }
 
             function makePumpkin(x, y, s) {
@@ -220,7 +221,7 @@
             }
 
             function buildGrove() {
-                trees = []; pumpkins = [];
+                trees = []; pumpkins = []; grassB = GRASS_COLS.map(() => []);
                 for (let i = 0; i < 10; i++) {
                     trees.push(makeTree(rand(0.05, 0.95) * W, H * (0.58 + 0.33 * Math.random()), 1));
                 }
@@ -242,34 +243,20 @@
 
             let flies = [];
             function updateFlies(dt, t) {
-                // Find concentrated hotspots (center of mass / peaks) from the motion field
-                let sumX = 0, sumY = 0, count = 0;
-                for (let i = 0; i < mf.length; i++) {
-                    if (mf[i] > 0.5) {
-                        sumX += (i % SW);
-                        sumY += ((i / SW) | 0);
-                        count++;
-                    }
-                }
-
-                // If motion is detected, spawn a dense, focused cluster of bright sparkles right around the movement center and peaks
-                if (count > 5) {
-                    const avgX = (sumX / count) / SW * W;
-                    const avgY = (sumY / count) / SH * H;
-
-                    // Spawn intense focused swarm around user
-                    if (flies.length < 350) {
-                        for (let k = 0; k < 4; k++) {
+                // Instantly spawn interactive fireflies and sparkles wherever the AI detects the body mask
+                if (flies.length < 500) {
+                    for (let i = 0; i < mf.length; i++) {
+                        const v = mf[i];
+                        if (v > 0.15 && Math.random() < 0.5) {
                             flies.push({
-                                x: avgX + rand(-50, 50) * sc,
-                                y: avgY + rand(-60, 60) * sc,
-                                vx: rand(-25, 25) * sc, vy: -rand(20, 50) * sc,
-                                life: rand(1.2, 2.5), max: 2.5, size: rand(4, 8.5) * sc
+                                x: ((i % SW) + rand(-0.8, 0.8)) / SW * W,
+                                y: (((i / SW) | 0) + rand(-0.8, 0.8)) / SH * H,
+                                vx: rand(-16, 16) * sc, vy: -rand(12, 38) * sc,
+                                life: rand(2.5, 5), max: 5, size: rand(3.5, 7) * sc
                             });
                         }
                     }
                 }
-
                 for (let i = flies.length - 1; i >= 0; i--) {
                     const f = flies[i];
                     f.life -= dt;
@@ -282,11 +269,10 @@
                 ctx.globalCompositeOperation = 'lighter';
                 for (const f of flies) {
                     const a = f.life / f.max;
-                    ctx.globalAlpha = Math.min(1, a * 1.8);
-                    ctx.fillStyle = '#fffae0';
-                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.9, 0, TAU); ctx.fill();
-                    const sz = f.size * 12;
-                    ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
+                    ctx.globalAlpha = Math.min(1, a * 1.5);
+                    ctx.fillStyle = '#fffbb8';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, TAU); ctx.fill();
+                    ctx.drawImage(glowFly, f.x - f.size * 5, f.y - f.size * 5, f.size * 10, f.size * 10);
                 }
                 ctx.globalAlpha = 1;
                 ctx.globalCompositeOperation = 'source-over';
@@ -324,12 +310,28 @@
                 }
             }
 
+            function drawAura() {
+                ctx.globalCompositeOperation = 'lighter';
+                const cw = W / SW, chh = H / SH;
+                for (let i = 0; i < trail.length; i++) {
+                    const v = trail[i];
+                    if (v < 0.15) continue;
+                    const cx = i % SW, cy = (i / SW) | 0;
+                    const sz = 70 * sc;
+                    ctx.globalAlpha = Math.min(0.25, v * 0.3);
+                    ctx.drawImage(glowFly, (cx + 0.5) * cw - sz / 2, (cy + 0.5) * chh - sz / 2, sz, sz);
+                }
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
             function draw(t) {
                 ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
                 ctx.drawImage(bg, 0, 0, W, H);
 
                 for (const tr of trees) drawTree(tr);
                 for (const p of pumpkins) drawPumpkin(p);
+                drawAura();
                 drawFlies();
 
                 ctx.drawImage(vig, 0, 0, W, H);
@@ -355,8 +357,11 @@
                 const dt = Math.min(0.05, (now - last) / 1000);
                 last = now; T += dt;
 
-                const dec = Math.pow(0.15, dt);
-                for (let i = 0; i < mf.length; i++) mf[i] *= dec;
+                const dec = Math.pow(0.12, dt);
+                for (let i = 0; i < mf.length; i++) {
+                    mf[i] *= dec;
+                    trail[i] = mf[i];
+                }
 
                 processCamera();
                 if (demo) {
@@ -380,7 +385,7 @@
                     camOn = true; demo = false;
                     await initTensorFlow();
                     hideIntro();
-                    toast('Focused Sparkle Tracking Active!');
+                    toast('AI Tracking Active & Responsive!');
                 } catch (e) {
                     toast('Camera failed. Using mouse demo mode.');
                 }
