@@ -3,49 +3,163 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Autumn Firefly Grove &mdash; AI BodyPix Tracking</title>
+    <title>Autumn Firefly Grove &mdash; Tensor-Guided RGB Tracking</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
-        html, body {
-            margin: 0; height: 100%; background: #070b18; overflow: hidden;
-            font-family: ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, -apple-system, sans-serif; color: #fff
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            background: #070b18;
+            overflow: hidden;
+            font-family: ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, -apple-system, sans-serif;
+            color: #fff
         }
-        canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block }
-        #v { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none }
+
+        canvas#c {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block
+        }
+
+        #v {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 2px;
+            height: 2px;
+            opacity: 0;
+            pointer-events: none
+        }
+
         #intro {
-            position: fixed; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
+            position: fixed;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             background: radial-gradient(ellipse at 50% 45%, rgba(20, 28, 55, .45), rgba(5, 8, 18, .88));
             transition: opacity .9s
         }
-        #intro.hide { opacity: 0; pointer-events: none }
+
+        #intro.hide {
+            opacity: 0;
+            pointer-events: none
+        }
+
         .card {
-            text-align: center; max-width: 500px; margin: 0 20px; padding: 38px 42px; border-radius: 30px;
-            background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .16);
-            -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); box-shadow: 0 24px 90px rgba(0, 0, 0, .5)
+            text-align: center;
+            max-width: 500px;
+            margin: 0 20px;
+            padding: 38px 42px;
+            border-radius: 30px;
+            background: rgba(255, 255, 255, .08);
+            border: 1px solid rgba(255, 255, 255, .16);
+            -webkit-backdrop-filter: blur(16px);
+            backdrop-filter: blur(16px);
+            box-shadow: 0 24px 90px rgba(0, 0, 0, .5)
         }
-        .card h1 { margin: 0 0 10px; font-size: 34px; font-weight: 600 }
-        .card p { margin: 0 0 22px; line-height: 1.5; color: rgba(255, 255, 255, .85); font-size: 16px }
-        .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap }
+
+        .card h1 {
+            margin: 0 0 10px;
+            font-size: 34px;
+            font-weight: 600;
+            letter-spacing: .3px
+        }
+
+        .card p {
+            margin: 0 0 22px;
+            line-height: 1.5;
+            color: rgba(255, 255, 255, .85);
+            font-size: 16px
+        }
+
+        .card p.small {
+            margin: 20px 0 0;
+            font-size: 13px;
+            color: rgba(255, 255, 255, .6)
+        }
+
+        .btns {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap
+        }
+
         button {
-            font: inherit; font-size: 16px; padding: 13px 24px; border-radius: 999px; border: 0; cursor: pointer;
-            color: #1a1206; background: linear-gradient(135deg, #ffe58a, #ff9a3d); font-weight: 600; transition: transform .15s
+            font: inherit;
+            font-size: 16px;
+            padding: 13px 24px;
+            border-radius: 999px;
+            border: 0;
+            cursor: pointer;
+            color: #1a1206;
+            background: linear-gradient(135deg, #ffe58a, #ff9a3d);
+            font-weight: 600;
+            transition: transform .15s
         }
-        button:hover { transform: scale(1.04) }
-        button.ghost { background: rgba(255, 255, 255, .12); color: #fff; border: 1px solid rgba(255, 255, 255, .25) }
+
+        button:hover {
+            transform: scale(1.04)
+        }
+
+        button.ghost {
+            background: rgba(255, 255, 255, .12);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, .25)
+        }
+
         #toast {
-            position: fixed; left: 50%; top: 22px; transform: translateX(-50%) translateY(-20px); z-index: 6;
-            padding: 10px 20px; border-radius: 999px; background: rgba(8, 12, 22, .8); color: #fff; font-size: 15px;
-            opacity: 0; transition: all .4s; pointer-events: none; text-align: center
+            position: fixed;
+            left: 50%;
+            top: 22px;
+            transform: translateX(-50%) translateY(-20px);
+            z-index: 6;
+            padding: 10px 20px;
+            border-radius: 999px;
+            background: rgba(8, 12, 22, .8);
+            color: #fff;
+            font-size: 15px;
+            opacity: 0;
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            transition: all .4s;
+            pointer-events: none;
+            max-width: 80vw;
+            text-align: center
         }
-        #toast.show { opacity: 1; transform: translateX(-50%) translateY(0) }
+
+        #toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0)
+        }
+
         #hint {
-            position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4; font-size: 13px;
-            color: rgba(255, 255, 255, .8); padding: 8px 18px; border-radius: 999px; background: rgba(8, 12, 22, .55);
-            opacity: 0; transition: opacity 1s; pointer-events: none; white-space: nowrap
+            position: fixed;
+            left: 50%;
+            bottom: 16px;
+            transform: translateX(-50%);
+            z-index: 4;
+            font-size: 13px;
+            color: rgba(255, 255, 255, .8);
+            padding: 8px 18px;
+            border-radius: 999px;
+            background: rgba(8, 12, 22, .55);
+            opacity: 0;
+            transition: opacity 1s;
+            pointer-events: none;
+            white-space: nowrap
         }
-        #hint.show { opacity: 1 }
+
+        #hint.show {
+            opacity: 1
+        }
     </style>
-    <!-- Load TensorFlow.js and BodyPix -->
+    <!-- Load TensorFlow.js and BodyPix for isolated single-subject noise-resistant tracking -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
 </head>
@@ -57,20 +171,21 @@
     <div id="intro">
         <div class="card">
             <h1>Autumn Firefly Grove</h1>
-            <p>TensorFlow BodyPix AI Isolation &mdash; fireflies and sparkles strictly follow your body shape while ignoring background noise.</p>
+            <p>TensorFlow BodyPix Isolation &mdash; tracks only a single subject under overhead view, ignoring background noise and lighting changes.</p>
             <div class="btns">
                 <button id="bCam">Start Camera Stream</button>
                 <button id="bMouse" class="ghost">Use Mouse / Touch</button>
             </div>
-            <p class="small">Press F for fullscreen &middot; D for AI motion debug view.</p>
+            <p class="small">Press F for fullscreen &middot; D for tracking overlay view.</p>
         </div>
     </div>
     <div id="toast"></div>
-    <div id="hint">F fullscreen &nbsp;&middot;&nbsp; M mirror &nbsp;&middot;&nbsp; C switch camera &nbsp;&middot;&nbsp; D debug view</div>
+    <div id="hint">F fullscreen &nbsp;&middot;&nbsp; M mirror &nbsp;&middot;&nbsp; C switch camera &nbsp;&middot;&nbsp; D debug view &nbsp;&middot;&nbsp; A demo</div>
 
     <script>
         (() => {
             'use strict';
+
             const $ = id => document.getElementById(id);
             const cv = $('c'), ctx = cv.getContext('2d');
             const video = $('v');
@@ -80,26 +195,30 @@
 
             let W = 0, H = 0, sc = 1, dpr = 1;
 
+            /* Soft glow sprites */
             function makeGlow(h, s, l) {
                 const c = document.createElement('canvas');
                 c.width = c.height = 64;
                 const g = c.getContext('2d');
                 const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,0.9)`);
-                gr.addColorStop(0.35, `hsla(${h},${s}%,${l}%,0.28)`);
+                gr.addColorStop(0, `hsla(${h},${s}%,${l}%,0.8)`);
+                gr.addColorStop(0.35, `hsla(${h},${s}%,${l}%,0.2)`);
                 gr.addColorStop(1, `hsla(${h},${s}%,${l}%,0)`);
-                g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+                g.fillStyle = gr;
+                g.fillRect(0, 0, 64, 64);
                 return c;
             }
             const glowWarm = makeGlow(35, 100, 62);
             const glowFly = makeGlow(62, 100, 66);
 
+            /* Motion Field & TensorFlow Segmentation Setup */
             const SW = 64, SH = 36;
             const mf = new Float32Array(SW * SH);
             const trail = new Float32Array(SW * SH);
             let net = null, segmenting = false;
 
-            let camOn = false, stream = null, mirror = true, demo = true, debug = false;
+            let camOn = false, stream = null, devices = [], devIdx = 0;
+            let mirror = true, sens = 1, demo = true, debug = false;
 
             function mfAt(X, Y) {
                 const cx = (X / W * SW) | 0, cy = (Y / H * SH) | 0;
@@ -124,7 +243,7 @@
 
             async function initTensorFlow() {
                 try {
-                    toast('Loading TensorFlow BodyPix AI model...');
+                    toast('Loading TensorFlow BodyPix model...');
                     await tf.setBackend('webgl');
                     net = await bodyPix.load({
                         architecture: 'MobileNetV1',
@@ -132,9 +251,9 @@
                         multiplier: 0.5,
                         quantBytes: 2
                     });
-                    toast('AI Model Active! Stand in view.');
+                    toast('TensorFlow model loaded successfully!');
                 } catch (e) {
-                    toast('TensorFlow init failed.');
+                    toast('TensorFlow init failed, falling back to frame diff.');
                 }
             }
 
@@ -144,7 +263,7 @@
                 try {
                     const segmentation = await net.segmentPerson(video, {
                         internalResolution: 'low',
-                        segmentationThreshold: 0.65
+                        segmentationThreshold: 0.7
                     });
                     
                     const data = segmentation.data;
@@ -156,7 +275,7 @@
                             const targetIdx = y * SW + (mirror ? SW - 1 - x : x);
 
                             if (data[idx] === 1) {
-                                mf[targetIdx] = 1.0; // Strong signal where human body is detected
+                                mf[targetIdx] = Math.min(1, mf[targetIdx] + 0.45);
                             }
                         }
                     }
@@ -164,6 +283,30 @@
                 segmenting = false;
             }
 
+            const RX = 8, RY = 5;
+            const hW = new Float32Array(RX * RY), hX = new Float32Array(RX * RY), hY = new Float32Array(RX * RY);
+            let hot = [];
+            function computeHot() {
+                hW.fill(0); hX.fill(0); hY.fill(0);
+                for (let y = 0; y < SH; y++) {
+                    const ry = Math.floor(y * RY / SH);
+                    for (let x = 0; x < SW; x++) {
+                        const v = mf[y * SW + x];
+                        if (v > 0.35) {
+                            const k = ry * RX + Math.floor(x * RX / SW);
+                            hW[k] += v; hX[k] += x * v; hY[k] += y * v;
+                        }
+                    }
+                }
+                hot = [];
+                for (let k = 0; k < RX * RY; k++) {
+                    if (hW[k] > 1.2) {
+                        hot.push({ x: (hX[k] / hW[k] + 0.5) / SW * W, y: (hY[k] / hW[k] + 0.5) / SH * H, s: Math.min(1, hW[k] / 10) });
+                    }
+                }
+            }
+
+            /* Scene Background & Grove Elements */
             const bg = document.createElement('canvas');
             const vig = document.createElement('canvas');
             let stars = [];
@@ -175,8 +318,11 @@
                 b.setTransform(dpr, 0, 0, dpr, 0, 0);
 
                 const g = b.createLinearGradient(0, 0, 0, H);
-                g.addColorStop(0, '#0a1230'); g.addColorStop(0.35, '#1a1f45');
-                g.addColorStop(0.55, '#3a2848'); g.addColorStop(1, '#1a120f');
+                g.addColorStop(0, '#0a1230');
+                g.addColorStop(0.35, '#1a1f45');
+                g.addColorStop(0.55, '#3a2848');
+                g.addColorStop(0.62, '#2a1f2a');
+                g.addColorStop(1, '#1a120f');
                 b.fillStyle = g; b.fillRect(0, 0, W, H);
 
                 stars = [];
@@ -187,10 +333,22 @@
                 b.globalCompositeOperation = 'lighter';
                 const mx = W * 0.8, my = H * 0.2;
                 const mg = b.createRadialGradient(mx, my, 0, mx, my, H * 0.55);
-                mg.addColorStop(0, 'rgba(255, 238, 200, 0.4)'); mg.addColorStop(1, 'rgba(255, 210, 160, 0)');
+                mg.addColorStop(0, 'rgba(255, 238, 200, 0.4)');
+                mg.addColorStop(0.25, 'rgba(255, 210, 160, 0.15)');
+                mg.addColorStop(1, 'rgba(255, 210, 160, 0)');
                 b.fillStyle = mg; b.fillRect(0, 0, W, H);
                 b.globalCompositeOperation = 'source-over';
-                b.fillStyle = '#fff3d6'; b.beginPath(); b.arc(mx, my, 40 * sc, 0, TAU); b.fill();
+                b.fillStyle = '#fff3d6';
+                b.beginPath(); b.arc(mx, my, 40 * sc, 0, TAU); b.fill();
+                b.fillStyle = 'rgba(230, 200, 150, 0.35)';
+                for (const [dx, dy, r] of [[-10, -8, 8], [12, 6, 6], [-4, 14, 5]]) {
+                    b.beginPath(); b.arc(mx + dx * sc, my + dy * sc, r * sc, 0, TAU); b.fill();
+                }
+
+                b.fillStyle = 'rgba(30, 22, 40, 0.8)';
+                b.beginPath(); b.moveTo(0, H * 0.55);
+                for (let x = 0; x <= W; x += W / 24) b.lineTo(x, H * (0.5 + 0.04 * Math.sin(x * 0.004) + 0.025 * Math.sin(x * 0.011 + 1)));
+                b.lineTo(W, H * 0.62); b.lineTo(0, H * 0.62); b.closePath(); b.fill();
 
                 const v = vig.getContext('2d');
                 v.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -199,38 +357,391 @@
                 v.fillStyle = vg; v.fillRect(0, 0, W, H);
             }
 
-            let trees = [], pumpkins = [], grassB = [];
+            let trees = [], pumpkins = [], grassB = [], groundLeaves = [];
+            const LEAF_COLORS = ['#e8650a', '#f59a1c', '#d4380d', '#e0b020', '#b8430a', '#c2410c'];
             const GRASS_COLS = ['#2b3a22', '#1f2d1b', '#3a2a17', '#344524'];
+            const PAL = {
+                green: ['#4f7d2b', '#6b9a33', '#86ad3c', '#3b6a2a'],
+                gold: ['#e8b923', '#f2cf45', '#d9a517'],
+                orange: ['#e8650a', '#f59a1c', '#d9520b'],
+                red: ['#c2410c', '#b3360b']
+            };
+            const MIXES = [[0.45, 0.25, 0.25, 0.05], [0.2, 0.3, 0.45, 0.05], [0.12, 0.5, 0.33, 0.05], [0.35, 0.15, 0.3, 0.2], [0.55, 0.3, 0.15, 0]];
+            function shade(hex, k) {
+                const n = parseInt(hex.slice(1), 16);
+                return 'rgb(' + ((n >> 16 & 255) * k | 0) + ',' + ((n >> 8 & 255) * k | 0) + ',' + ((n & 255) * k | 0) + ')';
+            }
+            function pickColor(mix) {
+                let r = Math.random(), i = 0;
+                while (i < 3 && r > mix[i]) { r -= mix[i]; i++; }
+                const arr = [PAL.green, PAL.gold, PAL.orange, PAL.red][i];
+                return arr[(Math.random() * arr.length) | 0];
+            }
+            function gauss() { return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; }
 
             function makeTree(x, y, s) {
-                const h = Math.max(0.26 * H, (y - H * 0.3) / 0.88);
+                const d = clamp((y / H - 0.58) / 0.33, 0, 1);
+                const top = H * (0.27 + 0.1 * d + rand(0, 0.08));
+                const h = Math.max(0.26 * H, (y - top) / 0.88);
+                const f = Math.min(h / (250 * sc), 1.35);
                 const SWd = Math.round(h * 1.7), SHt = Math.round(h * 1.35);
                 const spr = document.createElement('canvas');
                 spr.width = Math.round(SWd * dpr); spr.height = Math.round(SHt * dpr);
                 const g = spr.getContext('2d');
                 g.setTransform(dpr, 0, 0, dpr, 0, 0);
+                const mix = MIXES[(Math.random() * MIXES.length) | 0];
+                const leaves = [];
+                const trunkW = Math.max(4, 11 * f * sc);
+
+                function branch(bx, by, ang, len, wid, depth) {
+                    const ex = bx + Math.sin(ang) * len, ey = by - Math.cos(ang) * len;
+                    const cxm = (bx + ex) / 2 + Math.cos(ang) * len * rand(-0.12, 0.12);
+                    const cym = (by + ey) / 2 + Math.sin(ang) * len * rand(-0.12, 0.12);
+                    g.lineCap = 'round';
+                    g.strokeStyle = '#4a2b17';
+                    g.lineWidth = wid;
+                    g.beginPath(); g.moveTo(bx, by); g.quadraticCurveTo(cxm, cym, ex, ey); g.stroke();
+                    g.strokeStyle = 'rgba(190,130,80,0.4)';
+                    g.lineWidth = Math.max(0.8, wid * 0.22);
+                    g.beginPath(); g.moveTo(bx - wid * 0.2, by); g.quadraticCurveTo(cxm - wid * 0.2, cym, ex - wid * 0.2, ey); g.stroke();
+                    if (depth <= 2) {
+                        const n = depth === 0 ? 26 : 10;
+                        const rad = (depth === 0 ? 30 : 20) * f * sc;
+                        for (let i = 0; i < n; i++) {
+                            const tt = depth === 0 ? 1 : rand(0.5, 1);
+                            const lx = bx + (ex - bx) * tt + gauss() * rad, ly = by + (ey - by) * tt + gauss() * rad * 0.8;
+                            leaves.push({ x: lx, y: ly, r: rand(0, TAU), z: Math.random() });
+                        }
+                    }
+                    if (depth > 0) {
+                        const kids = (depth > 3 || Math.random() > 0.45) ? 2 : 3;
+                        for (let k = 0; k < kids; k++) {
+                            const off = (kids === 2 ? (k === 0 ? -1 : 1) : (k - 1)) * rand(0.3, 0.55) + rand(-0.1, 0.1);
+                            branch(ex, ey, ang + off, len * rand(0.7, 0.82), wid * 0.66, depth - 1);
+                        }
+                    }
+                }
+                const ox = SWd / 2, oy = SHt - 4;
                 g.fillStyle = '#4a2b17';
-                g.fillRect(SWd / 2 - 6, SHt - 60, 12, 60);
-                g.fillStyle = '#4f7d2b';
-                g.beginPath(); g.arc(SWd / 2, SHt - 90, h * 0.35, 0, TAU); g.fill();
+                g.beginPath(); g.moveTo(ox - trunkW * 0.9, oy); g.quadraticCurveTo(ox - trunkW * 0.4, oy - trunkW * 1.4, ox - trunkW * 0.5, oy - trunkW * 2.2);
+                g.lineTo(ox + trunkW * 0.5, oy - trunkW * 2.2); g.quadraticCurveTo(ox + trunkW * 0.4, oy - trunkW * 1.4, ox + trunkW * 0.9, oy); g.closePath(); g.fill();
+                branch(ox, oy - trunkW, rand(-0.06, 0.06), h * 0.3, trunkW, 5);
+
+                leaves.sort((p, q) => p.y - q.y);
+                const ls = 7.5 * f * sc;
+                for (const lf of leaves) {
+                    const col = pickColor(mix);
+                    const dark = lf.z < 0.35;
+                    g.save();
+                    g.translate(lf.x, lf.y); g.rotate(lf.r);
+                    const sz = ls * rand(0.7, 1.25);
+                    g.scale(sz, sz);
+                    g.fillStyle = dark ? shade(col, 0.62) : col;
+                    g.globalAlpha = dark ? 0.9 : 0.95;
+                    g.beginPath();
+                    g.moveTo(0, -1);
+                    g.bezierCurveTo(0.65, -0.6, 0.7, 0.4, 0, 1);
+                    g.bezierCurveTo(-0.7, 0.4, -0.65, -0.6, 0, -1);
+                    g.fill();
+                    if (!dark) {
+                        g.strokeStyle = 'rgba(60,30,10,0.35)';
+                        g.lineWidth = 0.12;
+                        g.beginPath(); g.moveTo(0, -0.9); g.lineTo(0, 0.9); g.stroke();
+                    }
+                    g.restore();
+                }
                 return { x, y, s, h, spr, sw: SWd, sh: SHt, ph: rand(0, TAU), push: 0, pop: 0 };
             }
 
             function makePumpkin(x, y, s) {
-                return { x, y, s, r: rand(24, 38) * s * sc, face: true, ph: rand(0, TAU), pop: 0, tilt: rand(-0.08, 0.08) };
+                const r = rand(24, 38) * s * sc;
+                return { x, y, s, r, face: Math.random() < 0.55, ph: rand(0, TAU), pop: 0, tilt: rand(-0.08, 0.08) };
             }
 
             function buildGrove() {
-                trees = []; pumpkins = []; grassB = GRASS_COLS.map(() => []);
-                for (let i = 0; i < 10; i++) {
-                    trees.push(makeTree(rand(0.05, 0.95) * W, H * (0.58 + 0.33 * Math.random()), 1));
+                trees = []; pumpkins = []; grassB = GRASS_COLS.map(() => []); groundLeaves = [];
+                const n = clamp(Math.round(W * H / 30000), 7, 14);
+                for (let i = 0; i < n; i++) {
+                    let x = 0, y = 0, s = 1, ok = false;
+                    for (let k = 0; k < 14 && !ok; k++) {
+                        x = rand(0.05, 0.95) * W;
+                        y = H * (0.58 + 0.33 * Math.sqrt(Math.random()));
+                        s = 0.65 + 0.6 * ((y / H - 0.58) / 0.33);
+                        ok = true;
+                        const md = 0.18 * H * s;
+                        for (const o of trees) {
+                            const dx = o.x - x, dy = (o.y - y) * 1.5;
+                            if (dx * dx + dy * dy < md * md) { ok = false; break; }
+                        }
+                    }
+                    if (ok) trees.push(makeTree(x, y, s));
                 }
                 trees.sort((a, b) => a.y - b.y);
 
-                for (let i = 0; i < 8; i++) {
-                    pumpkins.push(makePumpkin(rand(0.04, 0.96) * W, H * (0.62 + 0.33 * Math.random()), 1));
+                const np = clamp(Math.round(W * H / 60000), 6, 12);
+                for (let i = 0; i < np; i++) {
+                    const y = H * (0.62 + 0.33 * Math.random());
+                    const s = 0.7 + 0.6 * ((y / H - 0.6) / 0.38);
+                    pumpkins.push(makePumpkin(rand(0.04, 0.96) * W, y, s));
                 }
                 pumpkins.sort((a, b) => a.y - b.y);
+
+                const ng = clamp(Math.round(W * H / 700), 700, 2400);
+                for (let i = 0; i < ng; i++) {
+                    const gy = H * (0.52 + 0.5 * Math.pow(Math.random(), 0.75));
+                    const d = (gy / H - 0.5) / 0.5;
+                    const bl = { x: rand(-10, W + 10), y: gy, h: (12 + d * 28) * sc * rand(0.7, 1.3), ph: rand(0, TAU), push: 0 };
+                    grassB[(Math.random() * GRASS_COLS.length) | 0].push(bl);
+                }
+
+                for (let i = 0; i < 40; i++) {
+                    const y = H * rand(0.58, 0.98);
+                    groundLeaves.push({ x: rand(0, W), y, rot: rand(0, TAU), size: rand(7, 14) * sc * (0.7 + 0.5 * (y / H)), col: LEAF_COLORS[(Math.random() * LEAF_COLORS.length) | 0] });
+                }
+            }
+
+            let ambient = [], flies = [];
+            const MAXFLY = 320;
+
+            function seedAmbient() {
+                ambient = [];
+                for (let i = 0; i < 26; i++) {
+                    ambient.push({
+                        x: rand(0, W), y: rand(H * 0.4, H * 0.95),
+                        vx: rand(-8, 8) * sc, vy: rand(-8, 8) * sc,
+                        size: rand(2.5, 5) * sc, ph: rand(0, TAU), sp: rand(1, 2.4)
+                    });
+                }
+            }
+
+            function addFly(x, y) {
+                const L = rand(3.0, 6.0);
+                // Wide, natural elliptical scatter so it never looks like a solid ball
+                const rx = gauss() * 65 * sc;
+                const ry = gauss() * 35 * sc;
+                flies.push({
+                    x: x + rx,
+                    y: y + ry,
+                    vx: rand(-18, 18) * sc, 
+                    vy: -rand(2, 14) * sc, 
+                    life: L, max: L,
+                    size: rand(3.0, 6.0) * sc, 
+                    ph: rand(0, TAU), 
+                    sp: rand(2, 5), 
+                    wob: rand(1.2, 2.8)
+                });
+            }
+
+            function updateFlies(dt, t) {
+                for (const f of ambient) {
+                    f.x += (f.vx + Math.sin(t * f.sp + f.ph) * 10 * sc) * dt;
+                    f.y += (f.vy + Math.cos(t * f.sp * 0.8 + f.ph) * 10 * sc) * dt;
+                    if (f.x < 0) f.x = W; if (f.x > W) f.x = 0;
+                    if (f.y < H * 0.35) f.y = H * 0.35; if (f.y > H) f.y = H;
+                }
+
+                // Centroid tracking for person/cursor motion
+                let sumX = 0, sumY = 0, count = 0;
+                for (let i = 0; i < mf.length; i++) {
+                    const v = mf[i];
+                    if (v > 0.35) {
+                        sumX += (i % SW) * v;
+                        sumY += ((i / SW) | 0) * v;
+                        count += v;
+                    }
+                }
+
+                if (count > 0.5 && flies.length < MAXFLY) {
+                    const cx = (sumX / count) / SW * W;
+                    const cy = (sumY / count) / SH * H;
+                    // Controlled cluster emission for a natural wispy trail
+                    for (let k = 0; k < 2; k++) {
+                        addFly(cx, cy);
+                    }
+                }
+
+                for (let i = flies.length - 1; i >= 0; i--) {
+                    const f = flies[i];
+                    f.life -= dt;
+                    if (f.life <= 0) { flies[i] = flies[flies.length - 1]; flies.pop(); continue; }
+                    // Dispersed natural wandering drift
+                    f.vx += (Math.sin(t * f.wob + f.ph) * 26 * sc - f.vx) * dt * 1.2;
+                    f.vy += (-3 * sc + Math.cos(t * f.wob * 0.7 + f.ph) * 18 * sc - f.vy) * dt * 1.2;
+                    f.x += f.vx * dt; f.y += f.vy * dt;
+                }
+            }
+
+            function drawFlies(t) {
+                ctx.globalCompositeOperation = 'lighter';
+                for (const f of ambient) {
+                    const g = 0.35 + 0.65 * Math.max(0, Math.sin(t * 2.2 * f.sp + f.ph));
+                    ctx.globalAlpha = g * 0.85;
+                    ctx.fillStyle = '#fff4a0';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, TAU); ctx.fill();
+                    const sz = f.size * 7;
+                    ctx.globalAlpha = g * 0.5;
+                    ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
+                }
+                for (const f of flies) {
+                    const a = f.life / f.max;
+                    const env = Math.min(1, (1 - a) * 4) * Math.min(1, a * 2.0);
+                    const g = env * (0.5 + 0.5 * Math.sin(t * f.sp + f.ph));
+                    if (g < 0.02) continue;
+                    // Softer, less concentrated core opacity for a dispersed cluster look
+                    ctx.globalAlpha = Math.min(1, g * 0.9);
+                    ctx.fillStyle = '#fffeb5';
+                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.75, 0, TAU); ctx.fill();
+                    const sz = f.size * 8.5;
+                    ctx.globalAlpha = g * 0.55;
+                    ctx.drawImage(glowFly, f.x - sz / 2, f.y - sz / 2, sz, sz);
+                }
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            let leaves = [];
+            function spawnLeaf() {
+                leaves.push({
+                    x: rand(0, W), y: -20, vx: rand(-12, 12) * sc, vy: rand(18, 40) * sc,
+                    rot: rand(0, TAU), vr: rand(-1.5, 1.5), size: rand(10, 20) * sc,
+                    col: LEAF_COLORS[(Math.random() * LEAF_COLORS.length) | 0], ph: rand(0, TAU), dead: false
+                });
+            }
+            function drawLeafShape(x, y, rot, size, col, alpha) {
+                ctx.save();
+                ctx.translate(x, y); ctx.rotate(rot); ctx.scale(size, size);
+                ctx.globalAlpha = alpha; ctx.fillStyle = col;
+                ctx.beginPath();
+                ctx.moveTo(0, -1);
+                ctx.bezierCurveTo(0.6, -0.7, 1.1, -0.1, 0.4, 0.5);
+                ctx.bezierCurveTo(0.1, 0.9, 0, 1, 0, 1);
+                ctx.bezierCurveTo(0, 1, -0.1, 0.9, -0.4, 0.5);
+                ctx.bezierCurveTo(-1.1, -0.1, -0.6, -0.7, 0, -1);
+                ctx.fill();
+                ctx.restore();
+                ctx.globalAlpha = 1;
+            }
+
+            function updateFlora(dt, t, active) {
+                for (const tr of trees) {
+                    const m = Math.max(mfAt(tr.x, tr.y - tr.h * 0.7), mfAt(tr.x, tr.y));
+                    tr.pop += ((m > 0.12 ? 1 : 0) - tr.pop) * Math.min(1, dt * (m > 0.12 ? 8 : 2));
+                    const mR = mfAt(tr.x + 50 * sc, tr.y - tr.h * 0.5), mL = mfAt(tr.x - 50 * sc, tr.y - tr.h * 0.5);
+                    const target = (mL - mR) * 40 * sc * tr.s;
+                    tr.push += (target - tr.push) * Math.min(1, dt * 6);
+                }
+                for (const p of pumpkins) {
+                    let m = 0;
+                    for (const [dx, dy] of [[0, 0], [-40, 0], [40, 0], [0, -40]]) m = Math.max(m, mfAt(p.x + dx * sc, p.y + dy * sc));
+                    p.pop += ((m > 0.12 ? 1 : 0) - p.pop) * Math.min(1, dt * (m > 0.12 ? 8 : 1.5));
+                }
+                for (const arr of grassB) for (const g of arr) {
+                    if (!active) { g.push *= Math.max(0, 1 - dt * 6); continue; }
+                    const m = mfAt(g.x, g.y - g.h * 0.5);
+                    const target = Math.sin(t * 15 + g.ph) * m * g.h * 0.3;
+                    g.push += (target - g.push) * Math.min(1, dt * 10);
+                }
+            }
+
+            function drawTree(tr, t) {
+                const swayX = Math.sin(t * 0.7 + tr.ph) * 5 * sc * tr.s + tr.push;
+                const k = swayX / tr.h;
+                ctx.save();
+                ctx.transform(1, 0, -k, 1, tr.x, tr.y);
+                ctx.drawImage(tr.spr, -tr.sw / 2, -tr.sh + 4, tr.sw, tr.sh);
+                if (tr.pop > 0.05) {
+                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.globalAlpha = 0.14 * tr.pop;
+                    ctx.drawImage(tr.spr, -tr.sw / 2, -tr.sh + 4, tr.sw, tr.sh);
+                }
+                ctx.restore();
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = Math.min(0.5, 0.03 + 0.28 * tr.pop);
+                const gs = tr.h * (1.1 + 0.3 * tr.pop);
+                ctx.drawImage(glowWarm, tr.x + swayX - gs / 2, tr.y - tr.h * 0.7 - gs / 2, gs, gs);
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            function drawPumpkin(p, t) {
+                const r = p.r;
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.tilt);
+
+                ctx.fillStyle = 'rgba(8, 5, 10, 0.4)';
+                ctx.beginPath(); ctx.ellipse(0, r * 0.2, r * 1.15, r * 0.3, 0, 0, TAU); ctx.fill();
+
+                const glow = p.face ? 0.4 + 0.6 * p.pop + 0.06 * Math.sin(t * 5 + p.ph) : 0.8 * p.pop;
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = Math.min(0.9, 0.1 + glow * 0.55);
+                const gs = r * 5.2;
+                ctx.drawImage(glowWarm, -gs / 2, -r * 0.6 - gs / 2, gs, gs);
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = 1;
+
+                const lobes = [[-0.55, '#c2500a'], [0.55, '#c2500a'], [-0.28, '#e0670f'], [0.28, '#e0670f'], [0, '#f27d1c']];
+                for (const [dx, col] of lobes) {
+                    ctx.fillStyle = col;
+                    ctx.beginPath(); ctx.ellipse(dx * r, -r * 0.55, r * (dx === 0 ? 0.55 : 0.5), r * 0.62, 0, 0, TAU); ctx.fill();
+                }
+                ctx.strokeStyle = 'rgba(120, 40, 5, 0.45)';
+                ctx.lineWidth = Math.max(1, 1.6 * sc);
+                for (const dx of [-0.28, 0.28]) {
+                    ctx.beginPath(); ctx.moveTo(dx * r, -r * 1.14); ctx.quadraticCurveTo(dx * r * 1.5, -r * 0.55, dx * r, 0.02 * r); ctx.stroke();
+                }
+                ctx.fillStyle = 'rgba(255, 220, 150, 0.25)';
+                ctx.beginPath(); ctx.ellipse(-r * 0.25, -r * 0.85, r * 0.2, r * 0.3, -0.4, 0, TAU); ctx.fill();
+                ctx.fillStyle = '#4a5a22';
+                ctx.beginPath();
+                ctx.moveTo(-r * 0.1, -r * 1.12); ctx.lineTo(-r * 0.06, -r * 1.42); ctx.lineTo(r * 0.12, -r * 1.38); ctx.lineTo(r * 0.1, -r * 1.12);
+                ctx.closePath(); ctx.fill();
+
+                if (p.face) {
+                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.globalAlpha = Math.min(1, glow);
+                    ctx.fillStyle = '#ffd35a';
+                    ctx.beginPath();
+                    ctx.moveTo(-r * 0.42, -r * 0.82); ctx.lineTo(-r * 0.18, -r * 0.82); ctx.lineTo(-r * 0.3, -r * 0.56); ctx.closePath(); ctx.fill();
+                    ctx.beginPath();
+                    ctx.moveTo(r * 0.18, -r * 0.82); ctx.lineTo(r * 0.42, -r * 0.82); ctx.lineTo(r * 0.3, -r * 0.56); ctx.closePath(); ctx.fill();
+                    ctx.beginPath();
+                    ctx.moveTo(-r * 0.45, -r * 0.4);
+                    ctx.quadraticCurveTo(0, -r * 0.05, r * 0.45, -r * 0.4);
+                    ctx.quadraticCurveTo(0, -r * 0.28, -r * 0.45, -r * 0.4);
+                    ctx.fill();
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.globalAlpha = 1;
+                }
+                ctx.restore();
+            }
+
+            function drawGrass(t) {
+                const wind = 0.7 + 0.3 * Math.sin(t * 0.25);
+                ctx.lineCap = 'round';
+                ctx.lineWidth = 1.8 * sc;
+                for (let b = 0; b < grassB.length; b++) {
+                    const arr = grassB[b];
+                    ctx.strokeStyle = GRASS_COLS[b];
+                    ctx.beginPath();
+                    for (const g of arr) {
+                        const sway = Math.sin(t * 1.2 + g.ph) * g.h * 0.15 * wind;
+                        ctx.moveTo(g.x, g.y);
+                        ctx.quadraticCurveTo(g.x + sway * 0.4, g.y - g.h * 0.5, g.x + sway + g.push, g.y - g.h);
+                    }
+                    ctx.stroke();
+                }
+            }
+
+            function drawNightSky(t) {
+                ctx.globalCompositeOperation = 'lighter';
+                for (const s of stars) {
+                    const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.x);
+                    ctx.fillStyle = `rgba(255, 255, 255, ${s.alpha * tw})`;
+                    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+                }
+                ctx.globalCompositeOperation = 'source-over';
             }
 
             function resize() {
@@ -238,101 +749,56 @@
                 W = window.innerWidth; H = window.innerHeight;
                 cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
                 sc = Math.sqrt(W * H) / 1000;
-                buildBackground(); buildGrove();
+                buildBackground();
+                buildGrove();
+                seedAmbient();
+                flies = []; leaves = [];
             }
 
-            let flies = [];
-            function updateFlies(dt, t) {
-                // Instantly spawn interactive fireflies and sparkles wherever the AI detects the body mask
-                if (flies.length < 500) {
-                    for (let i = 0; i < mf.length; i++) {
-                        const v = mf[i];
-                        if (v > 0.15 && Math.random() < 0.5) {
-                            flies.push({
-                                x: ((i % SW) + rand(-0.8, 0.8)) / SW * W,
-                                y: (((i / SW) | 0) + rand(-0.8, 0.8)) / SH * H,
-                                vx: rand(-16, 16) * sc, vy: -rand(12, 38) * sc,
-                                life: rand(2.5, 5), max: 5, size: rand(3.5, 7) * sc
-                            });
-                        }
-                    }
+            function update(dt, t) {
+                const dec = Math.pow(0.07, dt);
+                let maxM = 0;
+                for (let i = 0; i < mf.length; i++) { mf[i] *= dec; if (mf[i] > maxM) maxM = mf[i]; }
+                processCamera();
+                if (demo) {
+                    inject(W * (0.5 + 0.38 * Math.sin(t * 0.35)), H * (0.66 + 0.2 * Math.sin(t * 0.53 + 1)), 4, 1);
                 }
-                for (let i = flies.length - 1; i >= 0; i--) {
-                    const f = flies[i];
-                    f.life -= dt;
-                    if (f.life <= 0) { flies.splice(i, 1); continue; }
-                    f.x += f.vx * dt; f.y += f.vy * dt;
-                }
-            }
+                computeHot();
+                const tdec = Math.pow(0.2, dt);
+                for (let i = 0; i < trail.length; i++) { const v = trail[i] * tdec; trail[i] = mf[i] > v ? mf[i] : v; }
+                const active = maxM > 0.04 || hot.length > 0 || demo;
 
-            function drawFlies() {
-                ctx.globalCompositeOperation = 'lighter';
-                for (const f of flies) {
-                    const a = f.life / f.max;
-                    ctx.globalAlpha = Math.min(1, a * 1.5);
-                    ctx.fillStyle = '#fffbb8';
-                    ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, TAU); ctx.fill();
-                    ctx.drawImage(glowFly, f.x - f.size * 5, f.y - f.size * 5, f.size * 10, f.size * 10);
-                }
-                ctx.globalAlpha = 1;
-                ctx.globalCompositeOperation = 'source-over';
-            }
+                updateFlora(dt, t, active);
+                updateFlies(dt, t);
 
-            function updateFlora(dt, t) {
-                for (const tr of trees) {
-                    const m = Math.max(mfAt(tr.x, tr.y - tr.h * 0.7), mfAt(tr.x, tr.y));
-                    tr.pop += ((m > 0.1 ? 1 : 0) - tr.pop) * Math.min(1, dt * 10);
+                if (leaves.length < 22 && Math.random() < dt * 1.2) spawnLeaf();
+                for (const l of leaves) {
+                    l.x += (l.vx + Math.sin(t * 1.6 + l.ph) * 26 * sc) * dt;
+                    l.y += l.vy * dt;
+                    l.rot += l.vr * dt;
+                    if (l.y > H + 30) l.dead = true;
                 }
-                for (const p of pumpkins) {
-                    const m = mfAt(p.x, p.y);
-                    p.pop += ((m > 0.1 ? 1 : 0) - p.pop) * Math.min(1, dt * 10);
-                }
-            }
-
-            function drawTree(tr) {
-                ctx.drawImage(tr.spr, tr.x - tr.sw / 2, tr.y - tr.sh, tr.sw, tr.sh);
-                if (tr.pop > 0.03) {
-                    ctx.globalCompositeOperation = 'lighter';
-                    ctx.fillStyle = `rgba(255, 170, 50, ${tr.pop * 0.5})`;
-                    ctx.beginPath(); ctx.arc(tr.x, tr.y - tr.h * 0.5, tr.h * 0.3, 0, TAU); ctx.fill();
-                    ctx.globalCompositeOperation = 'source-over';
-                }
-            }
-
-            function drawPumpkin(p) {
-                ctx.fillStyle = '#c2500a';
-                ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
-                if (p.pop > 0.03) {
-                    ctx.globalCompositeOperation = 'lighter';
-                    ctx.fillStyle = `rgba(255, 210, 90, ${p.pop})`;
-                    ctx.beginPath(); ctx.arc(p.x, p.y - p.r * 0.2, p.r * 0.5, 0, TAU); ctx.fill();
-                    ctx.globalCompositeOperation = 'source-over';
-                }
-            }
-
-            function drawAura() {
-                ctx.globalCompositeOperation = 'lighter';
-                const cw = W / SW, chh = H / SH;
-                for (let i = 0; i < trail.length; i++) {
-                    const v = trail[i];
-                    if (v < 0.15) continue;
-                    const cx = i % SW, cy = (i / SW) | 0;
-                    const sz = 70 * sc;
-                    ctx.globalAlpha = Math.min(0.25, v * 0.3);
-                    ctx.drawImage(glowFly, (cx + 0.5) * cw - sz / 2, (cy + 0.5) * chh - sz / 2, sz, sz);
-                }
-                ctx.globalAlpha = 1;
-                ctx.globalCompositeOperation = 'source-over';
+                leaves = leaves.filter(l => !l.dead);
             }
 
             function draw(t) {
                 ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
                 ctx.drawImage(bg, 0, 0, W, H);
+                drawNightSky(t);
 
-                for (const tr of trees) drawTree(tr);
-                for (const p of pumpkins) drawPumpkin(p);
-                drawAura();
-                drawFlies();
+                for (const gl of groundLeaves) drawLeafShape(gl.x, gl.y, gl.rot, gl.size, gl.col, 0.75);
+
+                drawGrass(t);
+                let ti = 0, pi = 0;
+                while (ti < trees.length || pi < pumpkins.length) {
+                    if (pi >= pumpkins.length || (ti < trees.length && trees[ti].y <= pumpkins[pi].y)) drawTree(trees[ti++], t);
+                    else drawPumpkin(pumpkins[pi++], t);
+                }
+
+                for (const l of leaves) drawLeafShape(l.x, l.y, l.rot, l.size, l.col, 0.85);
+                drawFlies(t);
 
                 ctx.drawImage(vig, 0, 0, W, H);
 
@@ -344,6 +810,7 @@
                     dctx.putImageData(dimg, 0, 0);
                     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(14, H - 124, 196, 112);
                     ctx.drawImage(dbg, 16, H - 122, 192, 108);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1; ctx.strokeRect(16, H - 122, 192, 108);
                 }
             }
 
@@ -356,26 +823,25 @@
             function frame(now) {
                 const dt = Math.min(0.05, (now - last) / 1000);
                 last = now; T += dt;
-
-                const dec = Math.pow(0.12, dt);
-                for (let i = 0; i < mf.length; i++) {
-                    mf[i] *= dec;
-                    trail[i] = mf[i];
-                }
-
-                processCamera();
-                if (demo) {
-                    inject(W * (0.5 + 0.38 * Math.sin(T * 0.35)), H * (0.66 + 0.2 * Math.sin(T * 0.53 + 1)), 4, 1);
-                }
-
-                updateFlora(dt, T);
-                updateFlies(dt, T);
+                update(dt, T);
                 draw(T);
                 requestAnimationFrame(frame);
             }
 
-            const introEl = $('intro');
-            function hideIntro() { introEl.classList.add('hide'); }
+            const toastEl = $('toast'), hintEl = $('hint'), introEl = $('intro');
+            let toastTimer = 0, hintTimer = 0;
+            function toast(msg, ms = 2400) {
+                toastEl.textContent = msg;
+                toastEl.classList.add('show');
+                clearTimeout(toastTimer);
+                toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+            }
+            function showHint(sec) {
+                hintEl.classList.add('show');
+                clearTimeout(hintTimer);
+                if (sec) hintTimer = setTimeout(() => hintEl.classList.remove('show'), sec * 1000);
+            }
+            function hideIntro() { introEl.classList.add('hide'); showHint(10); }
 
             async function startCamera() {
                 try {
@@ -385,19 +851,14 @@
                     camOn = true; demo = false;
                     await initTensorFlow();
                     hideIntro();
-                    toast('AI Tracking Active & Responsive!');
+                    toast('TensorFlow BodyPix tracking active.');
                 } catch (e) {
                     toast('Camera failed. Using mouse demo mode.');
                 }
             }
 
-            $('bCam').addEventListener('click', () => { startCamera(); });$('bMouse').addEventListener('click', () => { camOn = false; demo = false; hideIntro(); toast('Mouse / touch mode active'); });
-
-            function toast(msg) {
-                const t = $('toast');
-                t.textContent = msg; t.classList.add('show');
-                setTimeout(() => t.classList.remove('show'), 3000);
-            }
+            $('bCam').addEventListener('click', () => { startCamera(); });
+            $('bMouse').addEventListener('click', () => { camOn = false; demo = false; hideIntro(); toast('Mouse / touch mode active'); });
 
             window.addEventListener('pointermove', e => { if (!camOn) inject(e.clientX, e.clientY, 3.5, 1); });
             window.addEventListener('pointerdown', e => { if (!camOn) inject(e.clientX, e.clientY, 6, 1); });
@@ -422,4 +883,5 @@
         })();
     </script>
 </body>
+
 </html>
