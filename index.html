@@ -3,7 +3,9 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Autumn Firefly Grove (focus)</title>
+    <title>Autumn Firefly Grove (avatar, online libraries)</title>
+    <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" onerror="window.__noPose=1"></script>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
         html,
@@ -170,7 +172,7 @@
     <div id="intro">
         <div class="card">
             <h1>Autumn Firefly Grove</h1>
-            <p>Walk or wave &mdash; fireflies wake up and drift where you move, and the pumpkins glow as you pass.</p>
+            <p>Walk or wave &mdash; fireflies wake up and drift where you move, and the pumpkins glow as you pass. A figure in the grove copies your movements.</p>
             <div class="btns">
                 <button id="bCam">Start camera</button>
                 <button id="bMouse" class="ghost">Use mouse / touch</button>
@@ -179,10 +181,7 @@
         </div>
     </div>
     <div id="toast"></div>
-    <div id="hint">F fullscreen &nbsp;·&nbsp; M mirror &nbsp;·&nbsp; C switch camera &nbsp;·&nbsp; I list cameras
-        &nbsp;·&nbsp; D motion view &nbsp;·&nbsp; &minus; / + sensitivity &nbsp;·&nbsp; A demo &nbsp;·&nbsp; H hide<br>
-        <b>Focus:</b> P mode (all / zone / one person) &nbsp;·&nbsp; Z draw zone &nbsp;·&nbsp; X clear zone &nbsp;·&nbsp; L re-lock
-        &nbsp;·&nbsp; [ / ] min size</div>
+    <div id="hint">F fullscreen &nbsp;·&nbsp; M mirror &nbsp;·&nbsp; C camera &nbsp;·&nbsp; I cameras &nbsp;·&nbsp; B avatar &nbsp;·&nbsp; V view &nbsp;·&nbsp; T tracking mode &nbsp;·&nbsp; Y turn limit &nbsp;·&nbsp; W sideways &nbsp;·&nbsp; R response &nbsp;·&nbsp; K model &nbsp;·&nbsp; D debug &nbsp;·&nbsp; &minus; / + motion sensitivity &nbsp;·&nbsp; A demo &nbsp;·&nbsp; H hide<br><b>Focus:</b> P mode &nbsp;·&nbsp; Z draw zone &nbsp;·&nbsp; X clear &nbsp;·&nbsp; L re-lock &nbsp;·&nbsp; [ / ] min size</div>
 
     <script>
         (() => {
@@ -811,6 +810,385 @@
                 ctx.globalCompositeOperation = 'source-over';
             }
 
+
+            /* ------------------------------------------------------------------ */
+            /*  Avatar: your own 3D model, driven by on-device pose tracking.      */
+            /*  Everything is loaded from this folder; nothing is sent anywhere.   */
+            /*  Legs only move when both legs are really visible; arms, torso     */
+            /*  and head follow whatever part of you the camera can see.          */
+            /* ------------------------------------------------------------------ */
+            const AV_MODEL = 'https://raw.githubusercontent.com/ktrav1/Rehab_Try/main/Ch46_nonPBR.fbx';   // change this URL (or use a local path) for another avatar
+            let THREE = null, avatar = null, showAv = true, avLoading = false;
+            let poseObj = null, poseReady = false, poseLoopOn = false, poseVT = -1, poseModel = 1, poseFails = 0, viewYaw = 0.4;
+            let poseLM = null, poseWL = null, poseAt = -99, zCal = 1;
+            const deg = d => d * Math.PI / 180;
+            const TRACKING_MODES = [
+                { name: 'Stable Front', upper: true, lower: true, torso: true, turn: true, translate: false },
+                { name: 'Full Movement', upper: true, lower: true, torso: true, turn: true, translate: true },
+                { name: 'Upper Body Only', upper: true, lower: false, torso: true, turn: false, translate: false },
+                { name: 'Lower Body Only', upper: false, lower: true, torso: false, turn: false, translate: false },
+                { name: 'Torso Locked', upper: true, lower: true, torso: false, turn: false, translate: false }
+            ];
+            const TURN_LIMITS = [
+                { name: '15°', value: deg(15) }, { name: '30°', value: deg(30) },
+                { name: '45°', value: deg(45) }, { name: 'Unlimited', value: Math.PI }
+            ];
+            const RESPONSE_PRESETS = [
+                { name: 'Stable', rate: 6.5, vis: 0.66, hand: 0.60, depth: 0.52, dead: deg(2.5) },
+                { name: 'Balanced', rate: 10, vis: 0.58, hand: 0.50, depth: 0.72, dead: deg(1.5) },
+                { name: 'Responsive', rate: 16, vis: 0.48, hand: 0.40, depth: 0.90, dead: deg(0.8) }
+            ];
+            let trackingModeIndex = 0, turnLimitIndex = 2, responsePresetIndex = 1, sidewaysLocked = true;
+            const HARD_TURN_LOCK_ANGLE = deg(45), HARD_TURN_RELEASE_ANGLE = deg(35);
+            let excessiveTurnLocked = false, lockedTurnDirection = 1, turnLockMessageShown = false;
+            const modeNow = () => TRACKING_MODES[trackingModeIndex];
+            const responseNow = () => RESPONSE_PRESETS[responsePresetIndex];
+            const av = { vis: 0, x: 0, xT: 0, legW: 0, hipW: 0, lowW: 0, standT: 0, notT: 0, isStanding: false, fx: undefined, pvel: 0, travel: false, bodyYaw: 0, shoulderYaw: 0, headYaw: 0, headPitch: 0, headRoll: 0, lastSafeUpperPose: {}, turnLockFrames: 0, lg: {}, lgW: { left: 0, right: 0 }, shW: { left: 0, right: 0 }, armW: { left: 0, right: 0 }, ph: 0, stepW: 0, vel: 0, hist: [], walkHold: 0, cxs: undefined, sd: {}, sc: {}, hand: {}, prevHand: {}, spawnT: 0, test: false, k: 0.2 };
+            const BONE_KEYS = ['hips', 'spine', 'spine1', 'spine2', 'neck', 'head', 'headtopend', 'leftshoulder', 'leftarm', 'leftforearm', 'lefthand',
+                'rightshoulder', 'rightarm', 'rightforearm', 'righthand', 'leftupleg', 'leftleg', 'leftfoot', 'lefttoebase', 'rightupleg', 'rightleg', 'rightfoot', 'righttoebase'];
+            const NEED = ['hips', 'spine', 'neck', 'head', 'leftarm', 'leftforearm', 'lefthand', 'rightarm', 'rightforearm', 'righthand', 'leftupleg', 'leftleg', 'leftfoot', 'rightupleg', 'rightleg', 'rightfoot'];
+            const CHILD = { spine: 'spine1', spine1: 'spine2', spine2: 'neck', leftarm: 'leftforearm', leftforearm: 'lefthand', rightarm: 'rightforearm', rightforearm: 'righthand',
+                leftupleg: 'leftleg', leftleg: 'leftfoot', rightupleg: 'rightleg', rightleg: 'rightfoot' };
+            let tmp = null;
+
+            // "mixamorig:LeftArm" is stored by three.js as "mixamorigLeftArm": strip every separator and the prefix so both spellings match
+            function normName(n) { return String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^mixamorig\d*/, ''); }
+            function findBones(root) {
+                const map = {}, names = [];
+                const pass = onlyBones => root.traverse(o => {
+                    if (onlyBones && !o.isBone) return;
+                    const k = normName(o.name);
+                    if (k && !map[k]) map[k] = o;
+                    if (onlyBones) names.push(o.name);
+                });
+                pass(true);
+                if (!map.hips) pass(false);
+                const out = {};
+                for (const key of BONE_KEYS) {
+                    if (map[key]) { out[key] = map[key]; continue; }
+                    const alt = Object.keys(map).find(n => n.endsWith(key) && !/index|middle|ring|pinky|thumb/.test(n));
+                    if (alt) out[key] = map[alt];
+                }
+                return { bones: out, names };
+            }
+
+            async function loadAvatar() {
+                if (avatar || avLoading) return;
+                avLoading = true;
+                try {
+                    THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js');
+                    const { FBXLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FBXLoader.js');
+                    const obj = await new Promise((res, rej) => new FBXLoader().load(AV_MODEL, res, undefined, rej));
+                    const found = findBones(obj), B = found.bones;
+                    const missing = NEED.filter(k => !B[k]);
+                    if (missing.length) {
+                        console.warn('Avatar bones found:', found.names);
+                        toast('Avatar rig not recognised. Missing: ' + missing.join(', '), 9000);
+                        avLoading = false; return;
+                    }
+                    obj.traverse(o => {
+                        if (o.isMesh) {
+                            o.frustumCulled = false;
+                            const ms = Array.isArray(o.material) ? o.material : [o.material];
+                            for (const m of ms) {
+                                if (m.shininess !== undefined) m.shininess = 6; if (m.specular) m.specular.setScalar(0.04);
+                                if (m.map && m.emissive) { m.emissiveMap = m.map; m.emissive.setScalar(0.42); }   // self-lit lift so the figure stands out from the dark grove
+                            }
+                        }
+                    });
+                    const wrap = new THREE.Group(); wrap.add(obj);
+                    wrap.updateMatrixWorld(true);
+                    const P = new THREE.Vector3();
+                    const yOf = k => B[k] ? (B[k].getWorldPosition(P), P.y) : null;
+                    const feet = [yOf('lefttoebase'), yOf('righttoebase'), yOf('leftfoot'), yOf('rightfoot')].filter(v => v !== null);
+                    const top = B.headtopend ? yOf('headtopend') : yOf('head') + 0.2 * (yOf('head') - yOf('hips'));
+                    const minY = Math.min(...feet) - 0.02 * (top - Math.min(...feet));
+                    const scale = 1.7 / (top - minY);
+                    wrap.scale.setScalar(scale);
+                    wrap.position.y = -minY * scale;
+                    wrap.updateMatrixWorld(true);
+
+                    const scene = new THREE.Scene();
+                    scene.add(wrap);
+                    scene.add(new THREE.HemisphereLight(0xa9b8f0, 0x6a4430, 2.3));
+                    const moon = new THREE.DirectionalLight(0xc4d2ff, 2.4); moon.position.set(3, 4, 3); scene.add(moon);
+                    const warm = new THREE.DirectionalLight(0xffa85a, 1.9); warm.position.set(-3, 0.4, 3); scene.add(warm);
+                    const rim = new THREE.DirectionalLight(0xffd08a, 1.4); rim.position.set(2, 1.5, -3); scene.add(rim);
+                    const hh = 1.7;
+                    const cam = new THREE.OrthographicCamera(-0.95 * hh, 0.95 * hh, 0.8 * hh, -0.8 * hh, 0.1, 60);
+                    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                    renderer.setClearColor(0x000000, 0);
+                    renderer.setPixelRatio(1);
+
+                    tmp = {
+                        P0: new THREE.Vector3(), P1: new THREE.Vector3(), cur: new THREE.Vector3(), q: new THREE.Quaternion(),
+                        wq: new THREE.Quaternion(), pq: new THREE.Quaternion(), eq: new THREE.Quaternion(), eu: new THREE.Euler()
+                    };
+                    const rest = {}, restDir = {};
+                    for (const k of BONE_KEYS) if (B[k]) rest[k] = B[k].quaternion.clone();
+                    for (const k in CHILD) {
+                        if (B[k] && B[CHILD[k]]) {
+                            B[k].getWorldPosition(tmp.P0); B[CHILD[k]].getWorldPosition(tmp.P1);
+                            restDir[k] = tmp.P1.clone().sub(tmp.P0).normalize();
+                        }
+                    }
+                    avatar = { root: wrap, scene, cam, renderer, B, rest, restDir, h: hh, cw: 0, ch: 0 };
+                    setView();
+                    fitAvatarRenderer();
+                    toast('Avatar ready', 1800);
+                } catch (e) {
+                    console.warn('Avatar not loaded:', e);
+                    toast('Avatar not loaded. Check your internet connection and the model URL.', 9000);
+                }
+                avLoading = false;
+            }
+
+            function setView() {      // camera slightly to the side so knees and steps toward the screen show as real bends
+                if (!avatar) return;
+                const cy = 0.75 * avatar.h;
+                avatar.cam.position.set(Math.sin(viewYaw) * 20, cy, Math.cos(viewYaw) * 20);
+                avatar.cam.lookAt(0, cy, 0);
+                avatar.cam.updateMatrixWorld(true);
+            }
+            function fitAvatarRenderer() {
+                if (!avatar) return;
+                const Hav = H * 0.5, rs = Math.min(dpr, 1);
+                avatar.cw = Math.max(64, Math.round(1.9 * Hav * rs)); avatar.ch = Math.max(64, Math.round(1.6 * Hav * rs));
+                avatar.renderer.setSize(avatar.cw, avatar.ch, false);
+            }
+            function avRect() {
+                const Hav = H * 0.5;
+                return { Hav, w: 1.9 * Hav, h: 1.6 * Hav, x: av.x - 0.95 * Hav, y: H * 0.955 - 1.55 * Hav, ppu: Hav / avatar.h };
+            }
+
+            /* ---------- pose tracking (MediaPipe, all files from ./mediapipe) ---------- */
+            function onPose(res) {
+                if (res && res.poseLandmarks && res.poseWorldLandmarks) {
+                    // optional focus: ignore a person standing outside the drawn zone
+                    if (pmode >= 1 && zone) {
+                        const a = res.poseLandmarks[11], b = res.poseLandmarks[12];
+                        let cx = (a.x + b.x) / 2; if (mirror) cx = 1 - cx;
+                        const cy = (a.y + b.y) / 2;
+                        if (cx < zone.x0 || cx > zone.x1 || cy < zone.y0 || cy > zone.y1) { poseLM = null; return; }
+                    }
+                    poseLM = res.poseLandmarks; poseWL = res.poseWorldLandmarks; poseAt = performance.now() / 1000;
+                } else poseLM = null;
+            }
+            async function startPose() {
+                if (poseObj) return;
+                if (typeof Pose === 'undefined') { toast('Pose tracking files not found in the mediapipe folder.', 6000); return; }
+                try {
+                    poseObj = new Pose({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/' + f });
+                    poseObj.setOptions({ modelComplexity: poseModel, smoothLandmarks: true, enableSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.6 });
+                    poseObj.onResults(onPose);
+                    await poseObj.initialize();
+                    poseReady = true;
+                    if (!poseLoopOn) { poseLoopOn = true; poseLoop(); }
+                } catch (e) { console.warn(e); poseObj = null; toast('Pose tracking could not start (' + (e && e.message || e) + ')', 7000); }
+            }
+            async function poseLoop() {
+                while (true) {
+                    if (camOn && poseReady && showAv && video.readyState >= 2 && video.currentTime !== poseVT) {
+                        poseVT = video.currentTime;
+                        try { await poseObj.send({ image: video }); poseFails = 0; }
+                        catch (e) { if (++poseFails > 20) { poseReady = false; toast('Pose tracking stopped', 5000); } }
+                    }
+                    await new Promise(r => setTimeout(r, 12));
+                }
+            }
+
+            /* ---------- skeleton solving ---------- */
+            const sideSet = side => ((side === 'left') === !mirror) ? [11, 13, 15, 23, 25, 27] : [12, 14, 16, 24, 26, 28];
+            function visOK(i, th) { const p = poseLM && poseLM[i]; return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) && p.visibility > th; }
+            function angleDelta(a, b) { let d = a - b; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
+            function smoothAngle(current, target, rate, dt) { return current + angleDelta(target, current) * (1 - Math.exp(-rate * dt)); }
+            function deadAngle(v, d) { return Math.abs(v) <= d ? 0 : v - Math.sign(v) * d; }
+            function segmentOK(a, b, vis, lo = 0.08, hi = 0.85) {
+                if (!visOK(a, vis) || !visOK(b, vis)) return false;
+                const A = poseWL[a], B = poseWL[b];
+                const n = Math.hypot(B.x-A.x, B.y-A.y, B.z-A.z);
+                return Number.isFinite(n) && n >= lo && n <= hi;
+            }
+            function sdir(name, v) {
+                if (!v || !Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z) || v.lengthSq() < 1e-6) return av.sd[name] || new THREE.Vector3(0,-1,0);
+                const target = v.clone().normalize(); let s = av.sd[name];
+                if (!s) return av.sd[name] = target;
+                s.lerp(target, av.k); if (s.lengthSq() < 1e-6) s.copy(target); return s.normalize();
+            }
+            function ssc(name, v) { if (!Number.isFinite(v)) return av.sc[name] || 0; const o = av.sc[name] === undefined ? v : av.sc[name]; return av.sc[name] = o + (v-o)*av.k; }
+            function aimBone(bone, child, target) {                             // turn bone so that (bone -> child) points along target (world space)
+                bone.updateMatrixWorld(true);
+                bone.getWorldPosition(tmp.P0); child.getWorldPosition(tmp.P1);
+                tmp.cur.copy(tmp.P1).sub(tmp.P0).normalize();
+                tmp.q.setFromUnitVectors(tmp.cur, target);
+                bone.getWorldQuaternion(tmp.wq); tmp.wq.premultiply(tmp.q);
+                bone.parent.getWorldQuaternion(tmp.pq); tmp.pq.invert();
+                bone.quaternion.copy(tmp.pq.multiply(tmp.wq));
+                bone.updateMatrixWorld(true);
+            }
+            function turnBone(bone, euler) {                                    // extra world-space rotation about the bone's own joint
+                bone.updateMatrixWorld(true);
+                bone.getWorldQuaternion(tmp.wq);
+                tmp.wq.premultiply(tmp.eq.setFromEuler(euler));
+                bone.parent.getWorldQuaternion(tmp.pq); tmp.pq.invert();
+                bone.quaternion.copy(tmp.pq.multiply(tmp.wq));
+                bone.updateMatrixWorld(true);
+            }
+
+            const UPPER_BODY_BONES = ['spine','spine1','spine2','neck','head','leftshoulder','leftarm','leftforearm','lefthand','rightshoulder','rightarm','rightforearm','righthand'];
+            function saveSafeUpperBodyPose(B) {
+                for (const name of UPPER_BODY_BONES) {
+                    const bone = B[name]; if (!bone) continue;
+                    if (!av.lastSafeUpperPose[name]) av.lastSafeUpperPose[name] = new THREE.Quaternion();
+                    av.lastSafeUpperPose[name].copy(bone.quaternion);
+                }
+            }
+            function restoreSafeUpperBodyPose(B) {
+                for (const name of UPPER_BODY_BONES) {
+                    const bone = B[name], saved = av.lastSafeUpperPose[name];
+                    if (!bone || !saved) continue;
+                    bone.quaternion.slerp(saved, 0.65); bone.updateMatrixWorld(true);
+                }
+            }
+            function hasSavedUpperBodyPose() {
+                return !!(av.lastSafeUpperPose.spine || av.lastSafeUpperPose.spine1 || av.lastSafeUpperPose.head);
+            }
+            function solveAvatar(dt, t) {
+                const now = performance.now() / 1000;
+                const have = !!poseLM && !!poseWL && (av.test || now - poseAt < 0.6);
+                const mode = modeNow(), response = responseNow();
+                av.k = 1 - Math.exp(-dt * response.rate);
+                av.vis += ((have ? 1 : 0) - av.vis) * Math.min(1, dt * (have ? 7 : 1.4));
+                const { B, rest, restDir } = avatar, V = (x,y,z) => new THREE.Vector3(x,y,z);
+                const mxF = mirror ? -1 : 1;
+                if (have && poseWL[0] && poseWL[11] && poseWL[12]) {
+                    const d = poseWL[0].z - (poseWL[11].z + poseWL[12].z) / 2;
+                    if (Math.abs(d) > 0.04) zCal += ((d < 0 ? 1 : -1) - zCal) * 0.03;
+                }
+                const zF = zCal >= 0 ? -1 : 1;
+                const wv = (a,b) => { const A=poseWL[a], C=poseWL[b]; return V((C.x-A.x)*mxF, -(C.y-A.y), (C.z-A.z)*zF*response.depth); };
+                const mid = (a,b) => V(((poseWL[a].x+poseWL[b].x)/2)*mxF, -(poseWL[a].y+poseWL[b].y)/2, ((poseWL[a].z+poseWL[b].z)/2)*zF*response.depth);
+                for (const k of BONE_KEYS) if (B[k]) B[k].quaternion.copy(rest[k]);
+                avatar.root.updateMatrixWorld(true);
+
+                const hipsOK = have && visOK(23,response.vis) && visOK(24,response.vis) && poseLM[23].y < .98 && poseLM[24].y < .98;
+                const dist3=(a,b)=>Math.hypot(poseWL[a].x-poseWL[b].x,poseWL[a].y-poseWL[b].y,poseWL[a].z-poseWL[b].z);
+                for (const side of ['left','right']) {
+                    const [,,,hp,kn,an]=sideSet(side);
+                    const th=have&&mode.lower&&visOK(hp,response.vis)&&visOK(kn,response.vis)&&dist3(hp,kn)>.20;
+                    const sh=th&&visOK(an,response.hand)&&dist3(kn,an)>.16;
+                    av.lg[side]={th,sh};
+                    av.lgW[side]+=((th?1:0)-av.lgW[side])*Math.min(1,dt*response.rate*.55);
+                    av.shW[side]+=((sh?1:0)-av.shW[side])*Math.min(1,dt*response.rate*.55);
+                }
+                av.legW=Math.max(av.lgW.left,av.lgW.right);
+                av.hipW+=((hipsOK?1:0)-av.hipW)*Math.min(1,dt*4);
+                let standRaw=false;
+                if (hipsOK && visOK(11,response.vis) && visOK(12,response.vis)) {
+                    const sy=(poseLM[11].y+poseLM[12].y)/2, hy=(poseLM[23].y+poseLM[24].y)/2, tl=hy-sy;
+                    const ks=[25,26].filter(i=>visOK(i,response.hand)&&poseLM[i].y<.995);
+                    standRaw=tl>.07&&ks.some(i=>poseLM[i].y-hy>.42*tl);
+                }
+                if(standRaw){av.standT+=dt;av.notT=0}else{av.notT+=dt;av.standT=0}
+                if(!av.isStanding&&av.standT>.45)av.isStanding=true;
+                if(av.isStanding&&av.notT>1.4)av.isStanding=false;
+                const lowerOK=av.isStanding&&hipsOK;
+                av.lowW+=((av.isStanding?1:0)-av.lowW)*Math.min(1,dt*4);
+
+                const shouldersOK=have&&segmentOK(11,12,response.vis,.12,.75);
+                const hipsLineOK=have&&segmentOK(23,24,response.vis,.10,.65);
+                let rawShoulderYaw=0,rawBodyYaw=0;
+                if(mode.turn&&shouldersOK){
+                    const shoulderLine=wv(sideSet('right')[0],sideSet('left')[0]);
+                    rawShoulderYaw=Math.atan2(-shoulderLine.z,shoulderLine.x);rawBodyYaw=rawShoulderYaw;
+                    if(hipsLineOK&&lowerOK){const hipLine=wv(sideSet('right')[3],sideSet('left')[3]);rawBodyYaw=Math.atan2(-hipLine.z,hipLine.x);}
+                }
+                const rawTurnMagnitude=Math.max(Math.abs(rawShoulderYaw),Math.abs(rawBodyYaw));
+                const rawTurnValue=Math.abs(rawShoulderYaw)>=Math.abs(rawBodyYaw)?rawShoulderYaw:rawBodyYaw;
+                if(!excessiveTurnLocked&&shouldersOK&&rawTurnMagnitude>=HARD_TURN_LOCK_ANGLE){
+                    excessiveTurnLocked=true;lockedTurnDirection=rawTurnValue>=0?1:-1;av.turnLockFrames=0;
+                }
+                if(excessiveTurnLocked){
+                    if(shouldersOK&&rawTurnMagnitude<=HARD_TURN_RELEASE_ANGLE)av.turnLockFrames++;else av.turnLockFrames=0;
+                    if(av.turnLockFrames>=6){excessiveTurnLocked=false;av.turnLockFrames=0;}
+                }
+                if(excessiveTurnLocked&&!turnLockMessageShown){turnLockMessageShown=true;toast('Turn limit reached — face the camera to resume',2500);}
+                if(!excessiveTurnLocked)turnLockMessageShown=false;
+                let shoulderTarget=excessiveTurnLocked?lockedTurnDirection*HARD_TURN_LOCK_ANGLE:rawShoulderYaw;
+                let bodyTarget=excessiveTurnLocked?lockedTurnDirection*HARD_TURN_LOCK_ANGLE:rawBodyYaw;
+                shoulderTarget=deadAngle(shoulderTarget,response.dead);bodyTarget=deadAngle(bodyTarget,response.dead);
+                const effectiveTurnLimit=Math.min(TURN_LIMITS[turnLimitIndex].value,HARD_TURN_LOCK_ANGLE);
+                shoulderTarget=clamp(shoulderTarget,-effectiveTurnLimit,effectiveTurnLimit);
+                bodyTarget=clamp(bodyTarget,-effectiveTurnLimit,effectiveTurnLimit);
+                if(!shouldersOK&&!excessiveTurnLocked)shoulderTarget=0;
+                if(!hipsLineOK&&!excessiveTurnLocked)bodyTarget=shoulderTarget*.45;
+                av.shoulderYaw=smoothAngle(av.shoulderYaw,shoulderTarget,response.rate*.55,dt);
+                av.bodyYaw=smoothAngle(av.bodyYaw,bodyTarget,response.rate*.45,dt);
+                const hipYaw=mode.turn?av.bodyYaw*.72:0;
+                if(B.hips&&Math.abs(hipYaw)>.004)turnBone(B.hips,tmp.eu.set(0,hipYaw,0,'YXZ'));
+
+                let torso=V(0,1,0),twist=0;
+                if(mode.torso&&shouldersOK){const s=wv(sideSet('right')[0],sideSet('left')[0]);const tilt=clamp(Math.atan2(s.y,s.x),-deg(24),deg(24));const td=V(-Math.sin(tilt*.65),Math.cos(tilt*.65),0);let hd=td.clone();if(hipsOK){hd=mid(11,12).sub(mid(23,24));if(hd.lengthSq()>1e-6)hd.normalize();else hd.set(0,1,0);if(hd.y<.55)hd.set(hd.x*.4,.92,hd.z*.28).normalize();}torso=td.lerp(hd,av.hipW).normalize();twist=clamp(av.shoulderYaw-hipYaw,-deg(20),deg(20));}
+                torso=sdir('torso',torso);twist=smoothAngle(av.sc.twist||0,mode.torso?twist:0,response.rate*.55,dt);av.sc.twist=twist;
+                const chain=['spine','spine1','spine2'], weights=[.3,.6,.88];
+                for(let i=0;i<3;i++){const b=B[chain[i]],c=B[CHILD[chain[i]]];if(b&&c){const n=(restDir[chain[i]]||V(0,1,0)).clone();aimBone(b,c,mode.torso?n.lerp(torso,weights[i]).normalize():n);}}
+                if(mode.torso&&B.spine2)turnBone(B.spine2,tmp.eu.set(0,twist,0,'YXZ'));
+
+                let hy=0,hp=0,hr=0;
+                const faceOK=have&&mode.upper&&visOK(0,response.vis)&&visOK(7,response.hand)&&visOK(8,response.hand);
+                if(faceOK){const eL=mirror?8:7,eR=eL===7?8:7;const f=V(poseWL[0].x*mxF,-poseWL[0].y,poseWL[0].z*zF*response.depth).sub(mid(7,8));const e=wv(eR,eL);hy=Math.atan2(f.x,f.z)-av.shoulderYaw;hp=(Math.atan2(-f.y,Math.hypot(f.x,f.z))-.12)*.72;hr=Math.atan2(e.y,e.x)*.72;}
+                hy=clamp(deadAngle(hy,response.dead),-deg(45),deg(45));hp=clamp(deadAngle(hp,response.dead),-deg(35),deg(35));hr=clamp(deadAngle(hr,response.dead),-deg(25),deg(25));
+                av.headYaw=smoothAngle(av.headYaw,hy,response.rate*.65,dt);av.headPitch=smoothAngle(av.headPitch,hp,response.rate*.65,dt);av.headRoll=smoothAngle(av.headRoll,hr,response.rate*.65,dt);
+                if(B.head&&mode.upper)turnBone(B.head,tmp.eu.set(av.headPitch,av.headYaw,av.headRoll,'YXZ'));
+
+                for(const side of ['left','right']){const[sh,el,wr]=sideSet(side);const up=have&&mode.upper&&segmentOK(sh,el,response.vis,.10,.65);const fore=up&&segmentOK(el,wr,response.hand,.09,.60);av.armW[side]+=((up?1:0)-av.armW[side])*Math.min(1,dt*response.rate*.55);const out=side==='left'?1:-1,relax=V(out*.16,-1,0).normalize();let d1=relax.clone(),d2=relax.clone();if(up){d1=wv(sh,el);if(d1.lengthSq()>1e-6)d1.normalize();else d1.copy(relax);}if(fore){d2=wv(el,wr);if(d2.lengthSq()>1e-6)d2.normalize();else d2.copy(d1);}else if(up)d2.copy(d1);const w=mode.upper?av.armW[side]:0;aimBone(B[side+'arm'],B[side+'forearm'],sdir(side+'U',relax.clone().lerp(d1,w).normalize()));aimBone(B[side+'forearm'],B[side+'hand'],sdir(side+'F',relax.clone().lerp(d2,w).normalize()));}
+
+                if(!excessiveTurnLocked&&shouldersOK&&mode.upper)saveSafeUpperBodyPose(B);
+                if(excessiveTurnLocked&&hasSavedUpperBodyPose())restoreSafeUpperBodyPose(B);
+
+                if(mode.lower&&(av.legW>.01||av.shW.left>.01||av.shW.right>.01)){const X=V(1,0,0).applyAxisAngle(V(0,1,0),hipYaw);for(const side of ['left','right']){const[,,,hpI,kn,an]=sideSet(side),L=av.lg[side]||{},r1=restDir[side+'upleg'],r2=restDir[side+'leg'];const t=L.th?wv(hpI,kn).normalize():null,s=L.sh?wv(kn,an).normalize():null;const a1=sdir(side+'T',t?r1.clone().lerp(t,av.lgW[side]).normalize():r1.clone()),a2=sdir(side+'S',s?r2.clone().lerp(s,av.shW[side]).normalize():r2.clone());aimBone(B[side+'upleg'],B[side+'leg'],a1);aimBone(B[side+'leg'],B[side+'foot'],a2);}}
+
+                if(!av.x)av.x=av.xT=W*.5;
+                const allow=mode.translate&&!sidewaysLocked&&av.travel;
+                if(allow&&av.isStanding&&hipsOK){let fx=(poseLM[23].x+poseLM[24].x)/2;if(mirror)fx=1-fx;if(av.fx===undefined)av.fx=fx;const d=fx-av.fx,db=.028,old=av.fx;if(Math.abs(d)>db)av.fx=fx-Math.sign(d)*db;av.pvel+=(((av.fx-old)/Math.max(dt,.001))-av.pvel)*Math.min(1,dt*6);av.xT=clamp(W*(.5+(av.fx-.5)*1.35),W*.16,W*.84);}else{av.fx=undefined;av.pvel*=Math.max(0,1-dt*7);av.xT=W*.5;}
+                const vel=(av.xT-av.x)*4;av.x+=vel*dt;av.vel+=(vel-av.vel)*Math.min(1,dt*5);av.stepW=0;
+
+                av.spawnT-=dt;
+                if(av.vis>.5&&mode.upper){avatar.root.updateMatrixWorld(true);const r=avRect(),headY=(B.head.getWorldPosition(tmp.P0),tmp.P0.y);for(const side of ['left','right']){B[side+'hand'].getWorldPosition(tmp.P1);const hv=tmp.P1.clone().project(avatar.cam),px=r.x+(hv.x*.5+.5)*r.w,py=r.y+(.5-hv.y*.5)*r.h,pv=av.prevHand[side],sp=pv?Math.hypot(px-pv.x,py-pv.y)/Math.max(dt,.001):0;av.prevHand[side]={x:px,y:py};av.hand[side]={x:px,y:py};if(av.spawnT<=0&&flies.length<MAXFLY&&(sp>260*sc||tmp.P1.y>headY)&&av.armW[side]>.6){addFly(px+rand(-8,8)*sc,py+rand(-8,8)*sc);if(side==='right')av.spawnT=.09;}}}
+            }
+            function updateAvatar(dt, t) { if (avatar && showAv) solveAvatar(dt, t); }
+
+            function drawAvatar(t) {
+                if (!avatar || !showAv || av.vis < 0.02) return;
+                const r = avRect();
+                ctx.save();
+                ctx.globalAlpha = av.vis;
+                ctx.fillStyle = 'rgba(6,4,8,0.45)';
+                ctx.beginPath(); ctx.ellipse(av.x, H * 0.955 + r.Hav * 0.01, r.Hav * 0.34, r.Hav * 0.07, 0, 0, TAU); ctx.fill();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = av.vis * 0.2;
+                ctx.drawImage(glowWarm, av.x - r.Hav * 0.9, H * 0.955 - r.Hav * 1.6, r.Hav * 1.8, r.Hav * 1.8);
+                ctx.restore();
+                avatar.renderer.render(avatar.scene, avatar.cam);
+                ctx.save(); ctx.globalAlpha = av.vis;
+                ctx.drawImage(avatar.renderer.domElement, r.x, r.y, r.w, r.h);
+                ctx.restore();
+            }
+            const POSE_LINES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
+            function drawPoseDebug() {
+                const x0 = 218, y0 = H - 122, w = 192, h = 108;
+                ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x0 - 2, y0, w + 4, h + 2);
+                ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.strokeRect(x0, y0, w, h);
+                if (!poseLM) { ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.fillText(poseReady ? 'no person' : 'pose loading', x0 + 8, y0 + 18); return; }
+                ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.fillText(av.isStanding ? 'standing: avatar follows' : 'seated / partial: avatar stays', x0 + 8, y0 + 16);
+                ctx.lineWidth = 2;
+                for (const [a, b] of POSE_LINES) {
+                    const A = poseLM[a], Bq = poseLM[b], ok = A.visibility > 0.5 && Bq.visibility > 0.5;
+                    ctx.strokeStyle = ok ? 'rgba(120,255,160,0.95)' : 'rgba(255,120,120,0.5)';
+                    ctx.beginPath(); ctx.moveTo(x0 + (mirror ? 1 - A.x : A.x) * w, y0 + A.y * h); ctx.lineTo(x0 + (mirror ? 1 - Bq.x : Bq.x) * w, y0 + Bq.y * h); ctx.stroke();
+                }
+            }
+
             /* ------------------------------------------------------------------ */
             /*  Main loop                                                          */
             /* ------------------------------------------------------------------ */
@@ -827,6 +1205,7 @@
                 buildBackground();
                 buildGrove();
                 seedAmbient();
+                fitAvatarRenderer();
                 flies = []; leaves = [];
             }
 
@@ -845,6 +1224,7 @@
 
                 updateFlora(dt, t, active);
                 updateFlies(dt, t);
+                updateAvatar(dt, t);
 
                 if (leaves.length < 22 && Math.random() < dt * 1.2) spawnLeaf();
                 for (const l of leaves) {
@@ -910,6 +1290,7 @@
                     else drawPumpkin(pumpkins[pi++], t);
                 }
 
+                drawAvatar(t);
                 drawAura();
                 for (const l of leaves) drawLeafShape(l.x, l.y, l.rot, l.size, l.col, 0.85);
                 drawFlies(t);
@@ -926,6 +1307,7 @@
                     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(14, H - 124, 196, 112);
                     ctx.drawImage(dbg, 16, H - 122, 192, 108);
                     ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1; ctx.strokeRect(16, H - 122, 192, 108);
+                    drawPoseDebug();
                 }
             }
 
@@ -971,6 +1353,7 @@
                 video.srcObject = stream;
                 await video.play();
                 camOn = true; demo = false; havePrev = false; lastVT = -1;
+                loadAvatar(); startPose();
                 const list = await navigator.mediaDevices.enumerateDevices();
                 devices = list.filter(d => d.kind === 'videoinput');
                 const tr = stream.getVideoTracks()[0];
@@ -1042,6 +1425,13 @@
                 else if (k === 'i') listCameras();
                 else if (k === 'a') { demo = !demo; toast('Demo firefly ' + (demo ? 'on' : 'off')); }
                 else if (k === 'h') { hintEl.classList.toggle('show'); }
+                else if (k === 'w') { sidewaysLocked = !sidewaysLocked; av.travel = !sidewaysLocked; av.fx = undefined; av.xT = W * 0.5; toast('Sideways avatar position: ' + (sidewaysLocked ? 'locked' : 'free')); }
+                else if (k === 't') { trackingModeIndex = (trackingModeIndex + 1) % TRACKING_MODES.length; av.fx = undefined; av.xT = W * 0.5; toast('Tracking mode: ' + modeNow().name, 3500); }
+                else if (k === 'y') { turnLimitIndex = (turnLimitIndex + 1) % TURN_LIMITS.length; toast('Body turn limit: ' + TURN_LIMITS[turnLimitIndex].name, 3000); }
+                else if (k === 'r') { responsePresetIndex = (responsePresetIndex + 1) % RESPONSE_PRESETS.length; toast('Avatar response: ' + responseNow().name, 3000); }
+                else if (k === 'v') { viewYaw = viewYaw > 0.1 ? 0 : (viewYaw < -0.1 ? 0.4 : -0.4); setView(); toast('Avatar view: ' + (viewYaw === 0 ? 'front' : 'angled (V to change)')); }
+                else if (k === 'b') { showAv = !showAv; toast('Avatar ' + (showAv ? 'on' : 'off')); }
+                else if (k === 'k') { poseModel = poseModel ? 0 : 1; if (poseObj) poseObj.setOptions({ modelComplexity: poseModel }); toast('Tracking model: ' + (poseModel ? 'full (more accurate)' : 'lite (faster)'), 3000); }
                 else if (k === 'p') { pmode = (pmode + 1) % 3; lock = null; mf.fill(0); saveSettings(); toast('Mode: ' + MODE_NAMES[pmode] + ((pmode > 0 && !zone) ? '  (no zone drawn yet: press Z)' : ''), 3500); }
                 else if (k === 'z') { zoneEdit = !zoneEdit; dragA = null; toast(zoneEdit ? 'Drag on the screen to draw the active area. Press Z again when done.' : 'Zone editing off', 3500); }
                 else if (k === 'x') { zone = null; lock = null; saveSettings(); toast('Zone cleared: whole view is active'); }
@@ -1053,6 +1443,7 @@
             });
             window.addEventListener('resize', resize);
 
+            if (location.search.indexOf('test') >= 0) window.__av = { set(lm, wl) { poseLM = lm; poseWL = wl; av.test = true; }, loadAvatar, av, get avatar() { return avatar; }, setMirror(v) { mirror = v; } };
             loadSettings();
             resize();
             requestAnimationFrame(frame);
